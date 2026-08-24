@@ -718,11 +718,13 @@ class ArbPayService {
     } catch (_) {}
   }
 
-  // ── Unified request: native fast-path first, WebView fallback ────────────
+  // ── Unified request: native fast-path first (if clearance present), WebView fallback ──
   Future<Map<String, dynamic>> _request(String path, Map<String, dynamic> body,
       {String page = 'Arb', bool verbose = false}) async {
-    final native = await _postNative(path, body, page: page, verbose: verbose);
-    if (native != null) return native;
+    if (_nativeEnabled && _cookieHeader.contains('cf_clearance')) {
+      final native = await _postNative(path, body, page: page, verbose: verbose);
+      if (native != null) return native;
+    }
     return _post(path, body, page: page, verbose: verbose);
   }
 

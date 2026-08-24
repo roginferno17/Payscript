@@ -15,7 +15,7 @@ Future<void> _clearWebViewSession() async {
   try { await WebStorageManager.instance().deleteAllData(); } catch (_) {}
 }
 
-const kBuildVersion = 'v1.2.0';
+const kBuildVersion = 'v1.2.1';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -26,6 +26,18 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   final ArbPayService _service = ArbPayService();
   InAppWebViewController? _webController;
+
+  static const List<String> kMirrorUrls = [
+    'https://arbpay.me',
+    'https://skyhi.payzuva.com/#/login',
+    'https://arwuv.paykexo.com/#/login',
+    'https://ibjzw.payvuno.com/#/login',
+    'https://smpks.paywivo.com/#/login',
+    'https://wniiu.paykuno.com/#/login',
+    'https://dcxxk.payjora.com/#/login',
+    'https://ukmcm.payduno.com/#/login',
+  ];
+  int _mirrorIndex = 0;
 
   bool _showWebView = false;
   bool _loginReady  = false;
@@ -450,26 +462,66 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       ),
       Container(height: 0.5, color: t.border),
       Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         color: t.surface,
         child: Row(children: [
-          Icon(Icons.info_outline_rounded, color: t.yellow, size: 15),
+          Icon(Icons.info_outline_rounded, color: t.yellow, size: 14),
           const SizedBox(width: 8),
-          Expanded(child: Text('Log in below, then tap "Run Bot" once on the home page.',
-            style: TextStyle(color: t.textSub, fontSize: 12))),
+          Expanded(
+            child: Text('Log in below, then tap "Run Bot".',
+              style: TextStyle(color: t.textSub, fontSize: 11)),
+          ),
+          GestureDetector(
+            onTap: () async {
+              if (_webController != null) {
+                await _tryNextMirror(_webController!);
+              }
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: t.card,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: t.border),
+              ),
+              child: Row(children: [
+                Icon(Icons.alt_route_rounded, color: t.yellow, size: 12),
+                const SizedBox(width: 4),
+                Text('SWITCH MIRROR', style: TextStyle(color: t.yellow, fontSize: 10, fontWeight: FontWeight.bold)),
+              ]),
+            ),
+          ),
         ]),
       ),
       Expanded(child: InAppWebView(
         key: ValueKey(_webViewKey),
-        initialUrlRequest: URLRequest(url: WebUri('https://arbpay.me')),
+        initialUrlRequest: URLRequest(url: WebUri(kMirrorUrls[_mirrorIndex])),
         initialSettings: InAppWebViewSettings(
-          javaScriptEnabled: true, domStorageEnabled: true, databaseEnabled: true,
+          javaScriptEnabled: true,
+          domStorageEnabled: true,
+          databaseEnabled: true,
+          cacheEnabled: true,
+          clearSessionCache: false,
+          thirdPartyCookiesEnabled: true,
+          mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
+          allowFileAccess: true,
+          allowContentAccess: true,
+          javaScriptCanOpenWindowsAutomatically: true,
+          supportMultipleWindows: true,
+          useHybridComposition: true,
           userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
               '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
         ),
         onWebViewCreated: (c) { _webController = c; _service.init(c, state); },
         onLoadStop: (c, url) async { _webController = c; await _handleUrlChange(c, url?.toString() ?? ''); },
         onUpdateVisitedHistory: (c, url, _) async { await _handleUrlChange(c, url?.toString() ?? ''); },
+        onReceivedError: (c, req, err) async {
+          if (req.isForMainFrame ?? true) {
+            final s = context.read<AppState>();
+            s.addLog('Mirror load failed (${err.description}) — switching mirror...', level: LogLevel.warning);
+            await _tryNextMirror(c);
+          }
+        },
       )),
       Container(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
@@ -507,6 +559,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       context: context, isScrollControlled: true, backgroundColor: Colors.transparent,
       builder: (_) => ChangeNotifierProvider.value(value: state, child: _LogsSheet(t: t)),
     );
+  }
+
+  Future<void> _tryNextMirror(InAppWebViewController c) async {
+    _mirrorIndex = (_mirrorIndex + 1) % kMirrorUrls.length;
+    final nextUrl = kMirrorUrls[_mirrorIndex];
+    final s = context.read<AppState>();
+    s.addLog('Connecting to mirror [${_mirrorIndex + 1}/${kMirrorUrls.length}]: $nextUrl', level: LogLevel.info);
+    try {
+      await c.loadUrl(urlRequest: URLRequest(url: WebUri(nextUrl)));
+    } catch (_) {}
   }
 
   Future<void> _handleUrlChange(InAppWebViewController c, String url) async {
