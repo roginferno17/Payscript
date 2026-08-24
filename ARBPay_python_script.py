@@ -257,11 +257,18 @@ BANK_CODES = [
 ]
 
 def api_buy(platform_order: str, amount: int,
-            buy_bank_code: str = "mobikwik", buyer_kyc_id: int = 0) -> dict:
-    return browser_fetch("/ar-wallet/buyCenter/buy",
-                         {"amount": amount, "platformOrder": platform_order,
-                          "payType": "3", "orderType": 1,
-                          "buyBankCode": buy_bank_code, "buyerKycId": buyer_kyc_id})
+            buy_bank_code: str = "mobikwik", buyer_kyc_id: int = 0,
+            pay_type: str = "3", order_type: int = 1) -> dict:
+    payload = {
+        "amount": amount,
+        "platformOrder": platform_order,
+        "payType": pay_type,
+        "orderType": order_type,
+    }
+    if pay_type == "3" and buy_bank_code:
+        payload["buyBankCode"] = buy_bank_code
+        payload["buyerKycId"] = buyer_kyc_id
+    return browser_fetch("/ar-wallet/buyCenter/buy", payload)
 
 
 def api_get_payment_page(mr_order: str) -> dict:

@@ -37,13 +37,13 @@ class ArbPayService {
   // bridge) using the token + cookies + User-Agent harvested from the WebView
   // session. If Cloudflare blocks the native client (403 / challenge), we fall
   // back to the WebView fetch() path automatically.
+  String _currentOrigin = 'https://arbpay.me';
   http.Client? _httpClient;
   String _userAgent = '';
   String _cookieHeader = '';
   bool _nativeEnabled = true;     // disabled after repeated CF blocks
   int _nativeBlockStreak = 0;     // consecutive native CF blocks
-  // How many buy requests to fire in parallel when an order is found (native
-  // path only). First success wins. Kept modest to avoid rate-limit (1191).
+  DateTime? _nativeDisabledUntil; // temporary cooldown instead of permanent disable
   static const int _buyConcurrency = 3;
 
   void init(InAppWebViewController controller, AppState state) {
@@ -371,11 +371,12 @@ class ArbPayService {
         continue;
       }
 
-      _log('Attempt #$attempts → order=$platformOrder ₹$amount bank=${_activeBanks[_bankIndex % _activeBanks.length]}',
+      final bankLabel = isBank ? 'Bank Transfer' : 'bank=${_activeBanks[_bankIndex % _activeBanks.length]}';
+      _log('Attempt #$attempts → order=$platformOrder ₹$amount [$bankLabel]',
           level: LogLevel.info);
 
       // ── buy ───────────────────────────────────────────────────────────────
-      final currentBank = _activeBanks[_bankIndex % _activeBanks.length];
+      final currentBank = isBank ? '' : _activeBanks[_bankIndex % _activeBanks.length];
       verboseBuyCount++;
       final buyResp = await _apiBuyRace(platformOrder, amount, currentBank,
           payType: payType, orderType: orderType,
@@ -435,22 +436,27 @@ class ArbPayService {
           _log('code=$code but MR order missing! Full: $rawPreview', level: LogLevel.error);
         }
       } else if (code == '2005') {
-        _log('Bank "$currentBank" rejected (2005) for $platformOrder — next bank');
-        _bankIndex++;
-        if (_bankIndex % _activeBanks.length == 0) {
-          _log('All banks rejected for $platformOrder — skipping', level: LogLevel.warning);
-          _skippedOrders.add(platformOrder);
-          _bankIndex = 0;
-          _ordersAllBanksRejected++;
-          if (_ordersAllBanksRejected >= 15) {
-            _log('STOP: $_ordersAllBanksRejected orders in a row rejected by EVERY bank '
-                '(${_activeBanks.join(", ")}). None of your payment banks appear to be '
-                'enabled on the site. Fix your bound banks / switch payment mode in '
-                'Settings, then start again.', level: LogLevel.error);
-            _state?.setStatus(BotStatus.error);
-            _running = false;
-            return;
+        if (!isBank) {
+          _log('Bank "$currentBank" rejected (2005) for $platformOrder — next bank');
+          _bankIndex++;
+          if (_bankIndex % _activeBanks.length == 0) {
+            _log('All banks rejected for $platformOrder — skipping', level: LogLevel.warning);
+            _skippedOrders.add(platformOrder);
+            _bankIndex = 0;
+            _ordersAllBanksRejected++;
+            if (_ordersAllBanksRejected >= 15) {
+              _log('STOP: $_ordersAllBanksRejected orders in a row rejected by EVERY bank '
+                  '(${_activeBanks.join(", ")}). None of your payment banks appear to be '
+                  'enabled on the site. Fix your bound banks / switch payment mode in '
+                  'Settings, then start again.', level: LogLevel.error);
+              _state?.setStatus(BotStatus.error);
+              _running = false;
+              return;
+            }
           }
+        } else {
+          _log('Bank mode order rejected (2005) for $platformOrder — skipping', level: LogLevel.warning);
+          _skippedOrders.add(platformOrder);
         }
         await Future.delayed(const Duration(milliseconds: 50));
         continue;
@@ -513,6 +519,7 @@ class ArbPayService {
       try {
         final currentUrl = await _webView!.getUrl();
         if (currentUrl != null && currentUrl.origin.isNotEmpty) {
+          _currentOrigin = currentUrl.origin;
           probeHosts.insert(0, currentUrl.origin);
         }
       } catch (_) {}
@@ -580,7 +587,14 @@ class ArbPayService {
   //   • null when blocked/unusable → caller should fall back to WebView      ──
   Future<Map<String, dynamic>?> _postNative(String path, Map<String, dynamic> body,
       {String page = 'Arb', bool verbose = false}) async {
-    if (!_nativeEnabled || _httpClient == null || _token.isEmpty) return null;
+    if (_httpClient == null || _token.isEmpty) return null;
+    if (!_nativeEnabled) {
+      if (_nativeDisabledUntil != null && DateTime.now().isBefore(_nativeDisabledUntil!)) {
+        return null;
+      }
+      _nativeEnabled = true;
+      _nativeBlockStreak = 0;
+    }
 
     final headers = <String, String>{
       'Accept': 'application/json, text/plain, */*',
@@ -591,8 +605,8 @@ class ArbPayService {
       'deviceType': '3',
       'language': '1',
       'page': page,
-      'Origin': 'https://arbpay.me',
-      'Referer': 'https://arbpay.me/',
+      'Origin': _currentOrigin,
+      'Referer': '$_currentOrigin/',
       if (_userAgent.isNotEmpty) 'User-Agent': _userAgent,
       if (_cookieHeader.isNotEmpty) 'Cookie': _cookieHeader,
     };
@@ -615,7 +629,8 @@ class ArbPayService {
         }
         if (_nativeBlockStreak >= 3) {
           _nativeEnabled = false;
-          _log('Native path disabled after $_nativeBlockStreak CF blocks — using WebView only',
+          _nativeDisabledUntil = DateTime.now().add(const Duration(seconds: 15));
+          _log('Native path paused for 15s after $_nativeBlockStreak CF blocks — using WebView',
               level: LogLevel.warning);
         }
         return null; // fall back
@@ -802,7 +817,12 @@ class ArbPayService {
         return {};
       }
     } catch (e) {
-      _log('POST $path → Dart exception: $e', level: LogLevel.error);
+      if (e.toString().contains('MissingPluginException') || e.toString().contains('no implementation found')) {
+        _log('WebView detached or reloading — waiting 1s...', level: LogLevel.warning);
+        await Future.delayed(const Duration(seconds: 1));
+      } else {
+        _log('POST $path → Dart exception: $e', level: LogLevel.error);
+      }
       return {};
     }
   }
@@ -872,16 +892,19 @@ class ArbPayService {
   Future<Map<String, dynamic>> _apiBuy(
       String platformOrder, int amount, String bankCode,
       {String payType = '3', int orderType = 1, bool verbose = false}) async {
+    final body = <String, dynamic>{
+      'amount': amount,
+      'platformOrder': platformOrder,
+      'payType': payType,
+      'orderType': orderType,
+    };
+    if (payType == '3' && bankCode.isNotEmpty) {
+      body['buyBankCode'] = bankCode;
+      body['buyerKycId'] = 0;
+    }
     final resp = await _request(
       '/ar-wallet/buyCenter/buy',
-      {
-        'amount': amount,
-        'platformOrder': platformOrder,
-        'payType': payType,
-        'orderType': orderType,
-        'buyBankCode': bankCode,
-        'buyerKycId': 0,
-      },
+      body,
       verbose: verbose,
     );
     return resp;
