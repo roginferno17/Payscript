@@ -365,21 +365,30 @@ class ArbPayService {
       }
 
       final platformOrder = (order['platformOrder'] ?? order['orderNo'] ?? order['mOrderNo'] ?? '').toString();
-      final amount = (double.tryParse(order['amount']?.toString() ?? '0') ?? 0).toInt();
+      final rawAmt = order['amount'] ?? order['maximumAmount'] ?? order['minimumAmount'] ?? '0';
+      final amount = (double.tryParse(rawAmt.toString()) ?? 0).toInt();
       if (platformOrder.isEmpty) {
         await Future.delayed(const Duration(milliseconds: 50));
         continue;
       }
 
-      final bankLabel = isBank ? 'Bank Transfer' : 'bank=${_activeBanks[_bankIndex % _activeBanks.length]}';
+      final targetPayType = (order['payType'] != null && order['payType'].toString().isNotEmpty)
+          ? order['payType'].toString()
+          : payType;
+      final targetOrderType = (order['orderType'] != null)
+          ? (int.tryParse(order['orderType'].toString()) ?? orderType)
+          : orderType;
+
+      final isOrderBank = targetPayType == '1' || targetOrderType == 2;
+      final bankLabel = isOrderBank ? 'Bank Transfer' : 'bank=${_activeBanks[_bankIndex % _activeBanks.length]}';
       _log('Attempt #$attempts → order=$platformOrder ₹$amount [$bankLabel]',
           level: LogLevel.info);
 
       // ── buy ───────────────────────────────────────────────────────────────
-      final currentBank = isBank ? '' : _activeBanks[_bankIndex % _activeBanks.length];
+      final currentBank = isOrderBank ? '' : _activeBanks[_bankIndex % _activeBanks.length];
       verboseBuyCount++;
       final buyResp = await _apiBuyRace(platformOrder, amount, currentBank,
-          payType: payType, orderType: orderType,
+          payType: targetPayType, orderType: targetOrderType,
           verbose: verboseBuyCount <= 5);
 
       // Always log the full raw buy response for the first 5, then every unique code
@@ -430,13 +439,13 @@ class ArbPayService {
           _state?.setCurrentOrder(mrOrder);
           _state?.incrementRounds();
           _state?.setStatus(BotStatus.qrReady);
-          await _reloadWebView();
+          await _reloadWebView(mrOrder);
           return;
         } else {
           _log('code=$code but MR order missing! Full: $rawPreview', level: LogLevel.error);
         }
       } else if (code == '2005') {
-        if (!isBank) {
+        if (!isOrderBank) {
           _log('Bank "$currentBank" rejected (2005) for $platformOrder — next bank');
           _bankIndex++;
           if (_bankIndex % _activeBanks.length == 0) {
@@ -467,7 +476,7 @@ class ArbPayService {
           _log('Unfinished order: $existingOrder — proceeding', level: LogLevel.warning);
           _state?.setCurrentOrder(existingOrder);
           _state?.setStatus(BotStatus.qrReady);
-          await _reloadWebView();
+          await _reloadWebView(existingOrder);
           return;
         }
       } else if (code == '1191') {
@@ -484,9 +493,15 @@ class ArbPayService {
     }
   }
 
-  Future<void> _reloadWebView() async {
+  Future<void> _reloadWebView([String orderNo = '']) async {
     try {
-      await _webView?.reload();
+      if (orderNo.isNotEmpty) {
+        await _webView?.loadUrl(urlRequest: URLRequest(
+          url: WebUri('$_currentOrigin/#/order/cashier?platformOrder=$orderNo'),
+        ));
+      } else {
+        await _webView?.reload();
+      }
     } catch (_) {}
     _log('QR payment screen ready!', level: LogLevel.success);
   }
@@ -878,7 +893,8 @@ class ArbPayService {
     final filtered = records
         .whereType<Map<String, dynamic>>()
         .where((o) {
-          final amt = double.tryParse(o['amount']?.toString() ?? '0') ?? 0;
+          final rawAmt = o['amount'] ?? o['maximumAmount'] ?? o['minimumAmount'] ?? '0';
+          final amt = double.tryParse(rawAmt.toString()) ?? 0;
           return amt >= amtMin && amt <= amtMax;
         })
         .toList();
@@ -946,12 +962,13 @@ class ArbPayService {
 
   String _extractMrOrder(Map<String, dynamic> resp) {
     final data = resp['data'] ?? resp['result'];
-    if (data is String && data.startsWith('MR')) return data;
+    if (data is String && data.isNotEmpty) return data;
     if (data is Map) {
-      return (data['buyOrderNo'] ?? data['platformOrder'] ??
+      final orderNo = (data['buyOrderNo'] ?? data['platformOrder'] ??
           data['orderNo'] ?? data['mOrderNo'] ?? '').toString();
+      if (orderNo.isNotEmpty) return orderNo;
     }
-    return '';
+    return (resp['buyOrderNo'] ?? resp['platformOrder'] ?? resp['orderNo'] ?? '').toString();
   }
 
   void _log(String msg, {LogLevel level = LogLevel.info}) {
