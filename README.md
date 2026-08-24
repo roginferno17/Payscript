@@ -94,7 +94,7 @@ A native Android app that wraps the same bot logic with a clean UI.
 
 ### Latest Release
 
-Download the latest APK from [GitHub Releases](https://github.com/krishlazybuilds-commits/arb-pay-script/releases/latest).
+Download the latest APK from [GitHub Releases](https://github.com/roginferno17/Payscript/releases/latest).
 
 ### Features
 
@@ -128,7 +128,7 @@ flutter build apk --release
 
 ### Installing on Device
 
-1. Download `ARBPay-Bot-vX.X.X.apk` from [Releases](https://github.com/krishlazybuilds-commits/arb-pay-script/releases)
+1. Download `ARBPay-Bot-vX.X.X.apk` from [Releases](https://github.com/roginferno17/Payscript/releases)
 2. Enable **Install from unknown sources** on your Android device
 3. Install and open the app
 4. Go to **Settings**, enter your phone/password and configure amount range

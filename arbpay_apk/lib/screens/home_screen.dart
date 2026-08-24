@@ -511,10 +511,30 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   Future<void> _handleUrlChange(InAppWebViewController c, String url) async {
     _webController = c;
-    final isLogin = url.contains('login') || url == 'https://arbpay.me/' ||
-        url == 'https://arbpay.me/#/' || url.endsWith('arbpay.me');
-    if (isLogin) { await _autoFill(c); if (mounted) setState(() => _loginReady = false); }
-    else if (url.contains('arbpay.me')) { if (mounted) setState(() => _loginReady = true); }
+    final lowerUrl = url.toLowerCase();
+    final isLogin = lowerUrl.contains('login') || lowerUrl.contains('register') || lowerUrl.contains('forgot');
+
+    if (isLogin) {
+      await _autoFill(c);
+      if (mounted) setState(() => _loginReady = false);
+    } else {
+      // Check if token exists in localStorage or if we are beyond login page
+      try {
+        final tokenCheck = await c.evaluateJavascript(source: '''
+          (function(){
+            try {
+              var t = localStorage.getItem('token');
+              if (t && t.length > 20) return 'TOKEN_FOUND';
+            } catch(e){}
+            return 'NO_TOKEN';
+          })();
+        ''');
+        final hasToken = (tokenCheck?.toString() ?? '').contains('TOKEN_FOUND');
+        if (mounted) setState(() => _loginReady = hasToken || !isLogin);
+      } catch (_) {
+        if (mounted) setState(() => _loginReady = true);
+      }
+    }
   }
 
   Future<void> _autoFill(InAppWebViewController c) async {
@@ -528,20 +548,29 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       final sw = pass.replaceAll('"', r'\"');
       final r = await c.evaluateJavascript(source: '''
         (function(){
-          function set(el,v){var p=Object.getPrototypeOf(el),d=Object.getOwnPropertyDescriptor(p,'value');
-            if(d&&d.set)d.set.call(el,v);else el.value=v;
-            ['input','change','blur'].forEach(function(e){el.dispatchEvent(new Event(e,{bubbles:true}));});}
-          var ins=Array.from(document.querySelectorAll('input'));
-          var ph=ins.find(function(i){var h=((i.placeholder||'')+(i.name||'')+(i.id||'')).toLowerCase();
-            return h.match(/phone|mobile|user|account|login|tel/)&&i.type!=='password';});
-          if(!ph)ph=ins.find(function(i){return i.type!=='password'&&i.type!=='hidden'&&i.type!=='submit';});
-          var pw=ins.find(function(i){return i.type==='password';});
-          if(!ph||!pw)return 'FAIL';
-          set(ph,"$sp");set(pw,"$sw");return 'FILLED';
+          function set(el,v){
+            var p=Object.getPrototypeOf(el), d=Object.getOwnPropertyDescriptor(p,'value');
+            if(d&&d.set) d.set.call(el,v); else el.value=v;
+            ['input','change','blur'].forEach(function(e){el.dispatchEvent(new Event(e,{bubbles:true}));});
+          }
+          var ins = Array.from(document.querySelectorAll('input'));
+          var ph = ins.find(function(i){
+            var h = ((i.placeholder||'')+(i.name||'')+(i.id||'')+(i.className||'')).toLowerCase();
+            return h.match(/phone|mobile|user|account|login|tel/) && i.type!=='password' && i.type!=='hidden';
+          });
+          if(!ph) ph = ins.find(function(i){ return i.type!=='password' && i.type!=='hidden' && i.type!=='submit'; });
+          var pw = ins.find(function(i){ return i.type==='password'; });
+          if(!ph || !pw) return 'FAIL';
+          set(ph, "$sp");
+          set(pw, "$sw");
+          return 'FILLED';
         })();
       ''');
-      if ((r?.toString() ?? '').contains('FILLED')) { s.addLog('Autofill success', level: LogLevel.success); break; }
-      if (i == 14) s.addLog('Autofill failed', level: LogLevel.warning);
+      if ((r?.toString() ?? '').contains('FILLED')) {
+        s.addLog('Autofill success', level: LogLevel.success);
+        break;
+      }
+      if (i == 14) s.addLog('Autofill waiting or manual input needed', level: LogLevel.warning);
     }
   }
 

@@ -29,7 +29,13 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 
 URL     = "https://arbpay.me"
-API_URL = "https://apiweb.arbpay.me"
+API_URLS = [
+    "https://apiweb.apiarbpay.com",
+    "https://apiweb.payapiar.com",
+    "https://apiweb.asjoby.com",
+    "https://apiweb.arbpay.me"
+]
+API_URL = API_URLS[0]
 PHONE_NUMBER = os.environ.get("PHONE_NUMBER", "")
 PASSWORD = os.environ.get("PASSWORD", "")
 
@@ -72,7 +78,22 @@ def build_driver(browser: str, headless: bool):
         options.add_argument("--headless=new")
     for arg in common_args:
         options.add_argument(arg)
-    return uc.Chrome(options=options, use_subprocess=True)
+
+    try:
+        return uc.Chrome(options=options, use_subprocess=True)
+    except Exception as e:
+        log(f"[WARN] Standard UC init failed ({e}), attempting version_main=151...")
+        try:
+            return uc.Chrome(options=options, version_main=151, use_subprocess=True)
+        except Exception as e2:
+            log(f"[WARN] Version 151 UC init failed ({e2}), falling back to Edge...")
+            edge_opts = EdgeOptions()
+            edge_opts.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+            if headless:
+                edge_opts.add_argument("--headless=new")
+            for arg in common_args:
+                edge_opts.add_argument(arg)
+            return webdriver.Edge(options=edge_opts)
 
 
 # ── API layer — all calls run inside Chrome via fetch() to bypass Cloudflare ──
@@ -230,7 +251,10 @@ def api_before_buy(platform_order: str, amount: int) -> dict:
 
 
 # Bank codes to cycle through when server rejects the current one (code 2005)
-BANK_CODES = ["mobikwik", "paytm", "phonepe", "gpay", "amazonpay", "freecharge", "airtel"]
+BANK_CODES = [
+    "mobikwik", "paytm", "phonepe", "gpay", "amazonpay", "freecharge", "airtel",
+    "supermoney", "freo", "slice", "twid", "pop", "navi", "moneyView", "induspay", "jio"
+]
 
 def api_buy(platform_order: str, amount: int,
             buy_bank_code: str = "mobikwik", buyer_kyc_id: int = 0) -> dict:
@@ -781,13 +805,20 @@ def fallback_inputs(driver):
     return phone_input, password_input
 
 
-def wait_for_login_form(driver):
-    WebDriverWait(driver, 25).until(
-        EC.visibility_of_element_located((By.XPATH, "//*[contains(normalize-space(.),'Account Login')]"))
-    )
-    log("Login page rendered")
-    wait_for_visible_inputs(driver)
-    log_visible_inputs(driver)
+def wait_for_login_form(driver, timeout: float = 30.0):
+    deadline = time.time() + timeout
+    log("Waiting for login page / mirror redirect to settle...")
+    while time.time() < deadline:
+        try:
+            inputs = visible_enabled_elements(driver, By.TAG_NAME, "input")
+            if any((safe_get_attr(el, "type") or "").lower() == "password" for el in inputs):
+                log(f"Login form detected on {driver.current_url}")
+                phone_input, password_input = fallback_inputs(driver)
+                if phone_input and password_input:
+                    return phone_input, password_input
+        except Exception:
+            pass
+        time.sleep(0.5)
 
     phone_input, password_input = fallback_inputs(driver)
     if phone_input and password_input:
@@ -797,8 +828,8 @@ def wait_for_login_form(driver):
         (By.CSS_SELECTOR, "input[type='tel']"),
         (By.CSS_SELECTOR, "input[inputmode='numeric']"),
         (By.CSS_SELECTOR, "input[autocomplete='username']"),
-        (By.XPATH, "//*[contains(normalize-space(.),'Phone Number')]/following::input[1]"),
         (By.XPATH, "//input[contains(translate(@placeholder,'PHONE','phone'),'phone')]"),
+        (By.XPATH, "//*[contains(normalize-space(.),'Phone Number')]/following::input[1]"),
         (By.XPATH, "(//input[@type='text'])[1]"),
     ]
     password_selectors = [
@@ -813,10 +844,6 @@ def wait_for_login_form(driver):
         password_input = password_input or first_visible(driver, password_selectors, "password input")
     except TimeoutException:
         pass
-
-    fb_phone, fb_pass = fallback_inputs(driver)
-    phone_input    = phone_input    or fb_phone
-    password_input = password_input or fb_pass
 
     if phone_input is None or password_input is None:
         raise TimeoutException("Could not identify both login inputs")
@@ -886,14 +913,16 @@ def login(driver, phone: str, password: str):
 
     try:
         WebDriverWait(driver, 20).until(
-            lambda d: URL not in d.current_url
+            lambda d: "login" not in d.current_url.lower()
                       or len(d.find_elements(By.CSS_SELECTOR, "input[type='password']")) == 0
+                      or bool(d.execute_script("try { var t = JSON.parse(localStorage.getItem('token')||'{}'); return !!(t.value || t.access_token); } catch(e){ return false; }"))
         )
         log(f"Login confirmed — {driver.current_url}")
         build_api_session(driver)
         return True
     except TimeoutException:
         log(f"Login unconfirmed — {driver.current_url}")
+        build_api_session(driver)
         return False
 
 

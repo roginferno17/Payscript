@@ -193,16 +193,35 @@ def _on_loading_failed(params: dict):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 _url_filter: str = ""
 
+KNOWN_API_DOMAINS = [
+    "apiweb.arbpay.me",
+    "apiweb.apiarbpay.com",
+    "apiweb.payapiar.com",
+    "apiweb.asjoby.com",
+]
+
+KNOWN_FRONTEND_DOMAINS = [
+    "arbpay.me",
+    "arbpay.co",
+    "payzuva.com",
+    "paykexo.com",
+    "paykuno.com",
+    "payvuno.com",
+    "paywivo.com",
+    "payjora.com",
+    "payduno.com",
+]
+
 def _should_log(url: str) -> bool:
     """Return True if this URL should be logged."""
     if not url:
         return False
     # Always log API calls
-    if API_URL in url:
+    if any(domain in url for domain in KNOWN_API_DOMAINS) or "/ar-" in url:
         return True
-    # Log arbpay.me page navigations
-    if "arbpay.me" in url and not any(
-        ext in url for ext in [".js", ".css", ".png", ".jpg", ".ico", ".woff", ".svg"]
+    # Log page navigations on known mirror domains
+    if any(domain in url for domain in KNOWN_FRONTEND_DOMAINS) and not any(
+        ext in url for ext in [".js", ".css", ".png", ".jpg", ".ico", ".woff", ".svg", ".ttf"]
     ):
         return True
     # Custom filter
@@ -262,19 +281,32 @@ def build_driver(browser: str = "chrome", headless: bool = False):
             options.add_argument("--headless=new")
         for arg in common_args:
             options.add_argument(arg)
-        driver = webdriver.Edge(service=EdgeService(), options=options)
-    else:
-        # Use undetected_chromedriver to bypass Cloudflare bot detection
-        options = uc.ChromeOptions()
-        options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-        options.add_argument("--log-level=3")
-        if headless:
-            options.add_argument("--headless=new")
-        for arg in common_args:
-            options.add_argument(arg)
-        driver = uc.Chrome(options=options, use_subprocess=True)
+        return webdriver.Edge(service=EdgeService(), options=options)
 
-    return driver
+    # Use undetected_chromedriver to bypass Cloudflare bot detection
+    options = uc.ChromeOptions()
+    options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+    options.add_argument("--log-level=3")
+    if headless:
+        options.add_argument("--headless=new")
+    for arg in common_args:
+        options.add_argument(arg)
+
+    try:
+        return uc.Chrome(options=options, use_subprocess=True)
+    except Exception as e:
+        log(f"[WARN] Standard UC init failed ({e}), trying version_main=151...")
+        try:
+            return uc.Chrome(options=options, version_main=151, use_subprocess=True)
+        except Exception as e2:
+            log(f"[WARN] Version 151 failed ({e2}), falling back to Edge...")
+            edge_opts = EdgeOptions()
+            edge_opts.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+            if headless:
+                edge_opts.add_argument("--headless=new")
+            for arg in common_args:
+                edge_opts.add_argument(arg)
+            return webdriver.Edge(options=edge_opts)
 
 # ── Performance log fallback (for Edge / older Chrome) ───────────────────────
 def _poll_performance_logs(driver, stop_event: threading.Event):

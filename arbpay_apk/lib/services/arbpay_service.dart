@@ -6,9 +6,16 @@ import 'package:http/http.dart' as http;
 import '../models/app_state.dart';
 
 class ArbPayService {
-  static const String _apiUrl = 'https://apiweb.arbpay.me';
+  static const List<String> _apiUrls = [
+    'https://apiweb.apiarbpay.com',
+    'https://apiweb.payapiar.com',
+    'https://apiweb.asjoby.com',
+    'https://apiweb.arbpay.me',
+  ];
+  static const String _apiUrl = 'https://apiweb.apiarbpay.com';
   static const List<String> _bankCodes = [
-    'mobikwik', 'paytm', 'phonepe', 'gpay', 'amazonpay', 'freecharge', 'airtel'
+    'mobikwik', 'paytm', 'phonepe', 'gpay', 'amazonpay', 'freecharge', 'airtel',
+    'supermoney', 'freo', 'slice', 'twid', 'pop', 'navi', 'moneyView', 'induspay', 'jio'
   ];
 
   InAppWebViewController? _webView;
@@ -496,10 +503,24 @@ class ArbPayService {
       final cm = CookieManager.instance();
       var byName = <String, String>{};
 
+      final probeHosts = [
+        ..._apiUrls,
+        'https://arbpay.me',
+        'https://arbpay.co',
+      ];
+
+      // Also get current webview URL host if available
+      try {
+        final currentUrl = await _webView!.getUrl();
+        if (currentUrl != null && currentUrl.origin.isNotEmpty) {
+          probeHosts.insert(0, currentUrl.origin);
+        }
+      } catch (_) {}
+
       for (int attempt = 0; attempt < 3; attempt++) {
         // Collect existing cookies first.
         byName = {};
-        for (final host in ['https://apiweb.arbpay.me', 'https://arbpay.me']) {
+        for (final host in probeHosts) {
           try {
             final cookies = await cm.getCookies(url: WebUri(host));
             for (final c in cookies) {
@@ -512,7 +533,7 @@ class ArbPayService {
         _log('Warming API host for cf_clearance (attempt ${attempt + 1})...', level: LogLevel.info);
         await _webView!.callAsyncJavaScript(functionBody: '''
           try {
-            await fetch("https://apiweb.arbpay.me", {
+            await fetch("$_apiUrl", {
               method: "GET",
               mode: "no-cors",
               credentials: "include"
@@ -634,7 +655,19 @@ class ArbPayService {
     try {
       final cm = CookieManager.instance();
       var byName = <String, String>{};
-      for (final host in ['https://apiweb.arbpay.me', 'https://arbpay.me']) {
+      final probeHosts = [
+        ..._apiUrls,
+        'https://arbpay.me',
+        'https://arbpay.co',
+      ];
+      try {
+        final currentUrl = await _webView!.getUrl();
+        if (currentUrl != null && currentUrl.origin.isNotEmpty) {
+          probeHosts.insert(0, currentUrl.origin);
+        }
+      } catch (_) {}
+
+      for (final host in probeHosts) {
         try {
           final cookies = await cm.getCookies(url: WebUri(host));
           for (final c in cookies) {
@@ -647,7 +680,7 @@ class ArbPayService {
         _log('Re-warming API host for cf_clearance...', level: LogLevel.info);
         await _webView!.callAsyncJavaScript(functionBody: '''
           try {
-            await fetch("https://apiweb.arbpay.me", {
+            await fetch("$_apiUrl", {
               method: "GET", mode: "no-cors", credentials: "include"
             });
           } catch (_) {}
@@ -655,7 +688,7 @@ class ArbPayService {
         ''');
         await Future.delayed(const Duration(seconds: 3));
         byName = {};
-        for (final host in ['https://apiweb.arbpay.me', 'https://arbpay.me']) {
+        for (final host in probeHosts) {
           try {
             final cookies = await cm.getCookies(url: WebUri(host));
             for (final c in cookies) {
