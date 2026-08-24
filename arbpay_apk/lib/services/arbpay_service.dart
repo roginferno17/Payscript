@@ -330,20 +330,11 @@ class ArbPayService {
 
       if (orders.isEmpty) {
         emptyStreak++;
-        if (emptyStreak % 10 == 0) {
-          _log('No orders in ₹$amtMin-₹$amtMax after $emptyStreak empty calls (attempt $attempts)',
-              level: LogLevel.warning);
+        if (emptyStreak % 20 == 0) {
+          _log('Searching for orders in ₹$amtMin-₹$amtMax ($emptyStreak checks)...',
+              level: LogLevel.info);
         }
-        if (emptyStreak >= 100) {
-          _log('[WARN] 100 empty buyLists — rebuilding session', level: LogLevel.warning);
-          await _buildApiSession();
-          await _harvestSession();
-          _skippedOrders.clear();
-          _bankIndex = 0;
-          _ordersAllBanksRejected = 0;
-          emptyStreak = 0;
-        }
-        await Future.delayed(const Duration(milliseconds: 50));
+        await Future.delayed(const Duration(milliseconds: 150));
         continue;
       }
       emptyStreak = 0;
@@ -506,11 +497,10 @@ class ArbPayService {
     _log('QR payment screen ready!', level: LogLevel.success);
   }
 
-  // ── Harvest token/cookies/UA for the native HTTP fast-path ───────────────
+  // ── Harvest token/cookies/UA for session ─────────────────────────────────
   Future<void> _harvestSession() async {
     if (_webView == null) return;
     try {
-      // Exact UA the WebView uses, so Cloudflare sees a consistent client.
       final ua = await _webView!.evaluateJavascript(source: 'navigator.userAgent');
       _userAgent = (ua?.toString() ?? '').trim();
       if (_userAgent.isEmpty) {
@@ -518,72 +508,24 @@ class ArbPayService {
             '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
       }
 
-      // Poke the API host through the WebView so Cloudflare sets cf_clearance
-      // on apiweb.arbpay.me.  The browser handles the JS challenge natively.
-      // Retry up to 3 times with increasing delays.
-      final cm = CookieManager.instance();
-      var byName = <String, String>{};
-
-      final probeHosts = [
-        ..._apiUrls,
-        'https://arbpay.me',
-        'https://arbpay.co',
-      ];
-
-      // Also get current webview URL host if available
       try {
         final currentUrl = await _webView!.getUrl();
         if (currentUrl != null && currentUrl.origin.isNotEmpty) {
           _currentOrigin = currentUrl.origin;
-          probeHosts.insert(0, currentUrl.origin);
         }
       } catch (_) {}
 
-      for (int attempt = 0; attempt < 3; attempt++) {
-        // Collect existing cookies first.
-        byName = {};
-        for (final host in probeHosts) {
-          try {
-            final cookies = await cm.getCookies(url: WebUri(host));
-            for (final c in cookies) {
-              if (c.name.isNotEmpty) byName[c.name] = c.value.toString();
-            }
-          } catch (_) {}
-        }
-        if (byName.containsKey('cf_clearance')) break; // already have it
-
-        _log('Warming API host for cf_clearance (attempt ${attempt + 1})...', level: LogLevel.info);
-        await _webView!.callAsyncJavaScript(functionBody: '''
-          try {
-            await fetch("$_apiUrl", {
-              method: "GET",
-              mode: "no-cors",
-              credentials: "include"
-            });
-          } catch (_) {}
-          return true;
-        ''');
-        // Wait for the challenge to resolve — first attempt 3 s, then 5 s, then 8 s.
-        await Future.delayed(Duration(seconds: 3 + attempt * 2));
+      final cm = CookieManager.instance();
+      final cookies = await cm.getCookies(url: WebUri(_currentOrigin));
+      final byName = <String, String>{};
+      for (final c in cookies) {
+        if (c.name.isNotEmpty) byName[c.name] = c.value.toString();
       }
-
-      _cookieHeader = byName.entries.map((e) => '${e.key}=${e.value}').join('; ');
-
+      if (byName.isNotEmpty) {
+        _cookieHeader = byName.entries.map((e) => '${e.key}=${e.value}').join('; ');
+      }
       _httpClient ??= http.Client();
-      _nativeEnabled = true;
-      _nativeBlockStreak = 0;
-      final cfPresent = byName.keys.any((k) => k.toLowerCase().contains('cf_clearance'));
-      _log('Native fast-path armed (cookies: ${byName.length}${cfPresent ? ", cf_clearance ✓" : ""})',
-          level: LogLevel.success);
-      if (!cfPresent) {
-        _log('WARNING: cf_clearance missing — native requests will likely be blocked',
-            level: LogLevel.warning);
-      }
-    } catch (e) {
-      _log('Native session harvest failed: $e — staying on WebView path',
-          level: LogLevel.warning);
-      _nativeEnabled = false;
-    }
+    } catch (_) {}
   }
 
   bool _looksLikeCfChallenge(int status, String body) {
