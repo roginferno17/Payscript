@@ -14,8 +14,8 @@ class ArbPayService {
   ];
   static const String _apiUrl = 'https://apiweb.apiarbpay.com';
   static const List<String> _bankCodes = [
-    'mobikwik', 'paytm', 'phonepe', 'gpay', 'amazonpay', 'freecharge', 'airtel',
-    'supermoney', 'freo', 'slice', 'twid', 'pop', 'navi', 'moneyView', 'induspay', 'jio'
+    'supermoney', 'paytm', 'phonepe', 'gpay', 'mobikwik', 'amazonpay', 'freecharge', 'airtel',
+    'freo', 'slice', 'twid', 'pop', 'navi', 'moneyView', 'induspay', 'jio'
   ];
 
   InAppWebViewController? _webView;
@@ -49,6 +49,20 @@ class ArbPayService {
   void init(InAppWebViewController controller, AppState state) {
     _webView = controller;
     _state = state;
+  }
+
+  void resetSessionAndCache() {
+    _skippedOrders.clear();
+    _seenBuyCodes.clear();
+    _bankIndex = 0;
+    _ordersAllBanksRejected = 0;
+    _token = '';
+    _deviceCode = '';
+    _cookieHeader = '';
+    _nativeBlockStreak = 0;
+    _nativeDisabledUntil = null;
+    try { _httpClient?.close(); } catch (_) {}
+    _httpClient = null;
   }
 
   void dispose() {

@@ -252,12 +252,12 @@ def api_before_buy(platform_order: str, amount: int) -> dict:
 
 # Bank codes to cycle through when server rejects the current one (code 2005)
 BANK_CODES = [
-    "mobikwik", "paytm", "phonepe", "gpay", "amazonpay", "freecharge", "airtel",
-    "supermoney", "freo", "slice", "twid", "pop", "navi", "moneyView", "induspay", "jio"
+    "supermoney", "paytm", "phonepe", "gpay", "mobikwik", "amazonpay", "freecharge", "airtel",
+    "freo", "slice", "twid", "pop", "navi", "moneyView", "induspay", "jio"
 ]
 
 def api_buy(platform_order: str, amount: int,
-            buy_bank_code: str = "mobikwik", buyer_kyc_id: int = 0,
+            buy_bank_code: str = "supermoney", buyer_kyc_id: int = 0,
             pay_type: str = "3", order_type: int = 1) -> dict:
     payload = {
         "amount": amount,

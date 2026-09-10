@@ -92,6 +92,14 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void resetForNewRun() {
+    _status = BotStatus.idle;
+    _attempts = 0;
+    _currentOrder = '';
+    _logs.clear();
+    notifyListeners();
+  }
+
   void clearLogs() {
     _logs.clear();
     notifyListeners();

@@ -68,7 +68,7 @@ python ARBPay_python_script.py --browser edge --headless
 
 - **Cloudflare bypass** — uses `undetected-chromedriver` to avoid bot detection
 - **Browser-fetch injection** — all API calls run inside Chrome via `XMLHttpRequest`, inheriting the session cookies and bypassing CORS
-- **Bank cycling** — automatically tries `phonepe → paytm → gpay → mobikwik → ...` on rejection
+- **Bank cycling** — automatically tries `supermoney → paytm → phonepe → gpay → ...` on rejection
 - **Session recovery** — rebuilds token on consecutive failures
 - **Headless mode** — run fully in the background with `--headless`
 

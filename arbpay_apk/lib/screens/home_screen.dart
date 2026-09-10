@@ -15,7 +15,7 @@ Future<void> _clearWebViewSession() async {
   try { await WebStorageManager.instance().deleteAllData(); } catch (_) {}
 }
 
-const kBuildVersion = 'v1.2.3';
+const kBuildVersion = 'v2.0.0';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -78,8 +78,27 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     final state = context.read<AppState>();
     state.phone    = _phoneCtrl.text.trim();
     state.password = _passCtrl.text;
+
+    // Flush all previous payment logs, stats, and order data
+    state.resetForNewRun();
+
+    // Reset bot engine state (skipped orders, rejection counters, HTTP connections)
+    _service.stop();
+    _service.resetSessionAndCache();
+
+    // Clear webview cache & storage so previous payment state does not interfere
+    try {
+      await InAppWebViewController.clearAllCache();
+    } catch (_) {}
     await _clearWebViewSession();
-    setState(() { _webViewKey++; _webController = null; _showWebView = true; _loginReady = false; });
+
+    setState(() {
+      _webViewKey++;
+      _webController = null;
+      _showWebView = true;
+      _loginReady = false;
+      _isRunning = false;
+    });
   }
 
   Future<void> _completeCaptureAndRun() async {
@@ -89,20 +108,36 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     state.addLog('Capturing token from session...', level: LogLevel.info);
     if (_webController != null) _service.init(_webController!, state);
     await _service.captureTokenAndRun(state.phone, state.password, state.amountMin, state.amountMax);
-    setState(() { _isRunning = false; _showWebView = false; _loginReady = false; });
+    if (mounted) {
+      setState(() {
+        _isRunning = false;
+        // Keep _showWebView = true so user can seamlessly continue payment on the cashier/QR screen!
+      });
+    }
   }
 
   void _stopBot() {
     _service.stop();
-    setState(() { _isRunning = false; _showWebView = false; _loginReady = false; });
+    if (mounted) {
+      setState(() => _isRunning = false);
+    }
   }
 
   void _restartFlow() {
     final state = context.read<AppState>();
-    state.reset();
-    state.clearLogs();
+    state.resetForNewRun();
     _service.stop();
-    setState(() { _isRunning = false; _showWebView = false; _loginReady = false; _webViewKey++; _webController = null; });
+    _service.resetSessionAndCache();
+    try {
+      InAppWebViewController.clearAllCache();
+    } catch (_) {}
+    setState(() {
+      _isRunning = false;
+      _showWebView = false;
+      _loginReady = false;
+      _webViewKey++;
+      _webController = null;
+    });
   }
 
   @override
@@ -386,15 +421,22 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       if (!_isRunning && state.status != BotStatus.qrReady)
         _PrimaryBtn(label: 'CAPTURE TOKEN', icon: Icons.fingerprint_rounded,
           t: t, onTap: _captureToken),
-      if (_isRunning)
+      if (_isRunning) ...[
         _OutlineBtn(label: 'STOP BOT', icon: Icons.stop_circle_outlined,
           color: t.red, t: t, onTap: _stopBot),
+        const SizedBox(height: 10),
+        _PrimaryBtn(label: 'VIEW WEB SCREEN', icon: Icons.open_in_browser_rounded,
+          t: t, onTap: () => setState(() => _showWebView = true)),
+      ],
       if (!_isRunning && state.status == BotStatus.qrReady) ...[
-        _PrimaryBtn(label: 'CAPTURE TOKEN', icon: Icons.fingerprint_rounded,
-          t: t, onTap: _captureToken),
+        _PrimaryBtn(label: 'CONTINUE PAYMENT', icon: Icons.payment_rounded,
+          t: t, onTap: () => setState(() => _showWebView = true)),
+        const SizedBox(height: 10),
+        _OutlineBtn(label: 'NEW RUN / CAPTURE TOKEN', icon: Icons.fingerprint_rounded,
+          color: t.yellow, t: t, onTap: _captureToken),
         const SizedBox(height: 10),
         _OutlineBtn(label: 'RESTART FLOW', icon: Icons.replay_rounded,
-          color: t.yellow, t: t, onTap: _restartFlow),
+          color: t.textSub, t: t, onTap: _restartFlow),
       ],
     ]);
   }
@@ -438,10 +480,21 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         color: t.bg,
         child: Row(children: [
           _headerBtn(icon: Icons.arrow_back_ios_new_rounded, color: t.textSub, t: t,
-            onTap: () => setState(() { _showWebView = false; _loginReady = false; })),
+            onTap: () => setState(() { _showWebView = false; })),
           const SizedBox(width: 12),
-          Expanded(child: Text('Login to ARBPay',
-            style: TextStyle(color: t.textPrimary, fontWeight: FontWeight.bold, fontSize: 16))),
+          Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                state.status == BotStatus.qrReady
+                    ? 'Payment Cashier'
+                    : (_isRunning ? 'Bot Running...' : 'Login to ARBPay'),
+                style: TextStyle(color: t.textPrimary, fontWeight: FontWeight.bold, fontSize: 16)),
+              if (state.currentOrder.isNotEmpty)
+                Text('Order: ${state.currentOrder}',
+                  style: TextStyle(color: t.yellow, fontSize: 11, fontFamily: 'monospace')),
+            ],
+          )),
           GestureDetector(
             onTap: () => _showLogsSheet(state, t),
             child: Container(
@@ -461,38 +514,53 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         ]),
       ),
       Container(height: 0.5, color: t.border),
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        color: t.surface,
-        child: Row(children: [
-          Icon(Icons.info_outline_rounded, color: t.yellow, size: 14),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text('Log in below, then tap "Run Bot".',
-              style: TextStyle(color: t.textSub, fontSize: 11)),
-          ),
-          GestureDetector(
-            onTap: () async {
-              if (_webController != null) {
-                await _tryNextMirror(_webController!);
-              }
-            },
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: t.card,
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: t.border),
-              ),
-              child: Row(children: [
-                Icon(Icons.alt_route_rounded, color: t.yellow, size: 12),
-                const SizedBox(width: 4),
-                Text('SWITCH MIRROR', style: TextStyle(color: t.yellow, fontSize: 10, fontWeight: FontWeight.bold)),
-              ]),
+      if (state.status == BotStatus.qrReady)
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          color: t.green.withValues(alpha: 0.15),
+          child: Row(children: [
+            Icon(Icons.check_circle_rounded, color: t.green, size: 16),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text('Order Claimed! Continue payment directly on this screen.',
+                style: TextStyle(color: t.green, fontSize: 11, fontWeight: FontWeight.bold)),
             ),
-          ),
-        ]),
-      ),
+          ]),
+        )
+      else
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          color: t.surface,
+          child: Row(children: [
+            Icon(Icons.info_outline_rounded, color: t.yellow, size: 14),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                _isRunning ? 'Scanning and claiming orders automatically...' : 'Log in below, then tap "Run Bot".',
+                style: TextStyle(color: t.textSub, fontSize: 11)),
+            ),
+            GestureDetector(
+              onTap: () async {
+                if (_webController != null) {
+                  await _tryNextMirror(_webController!);
+                }
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: t.card,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: t.border),
+                ),
+                child: Row(children: [
+                  Icon(Icons.alt_route_rounded, color: t.yellow, size: 12),
+                  const SizedBox(width: 4),
+                  Text('SWITCH MIRROR', style: TextStyle(color: t.yellow, fontSize: 10, fontWeight: FontWeight.bold)),
+                ]),
+              ),
+            ),
+          ]),
+        ),
       Expanded(child: InAppWebView(
         key: ValueKey(_webViewKey),
         initialUrlRequest: URLRequest(url: WebUri(kMirrorUrls[_mirrorIndex])),
@@ -531,24 +599,73 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         ),
         child: AnimatedSwitcher(
           duration: const Duration(milliseconds: 300),
-          child: _loginReady && !_isRunning
-              ? _PrimaryBtn(key: const ValueKey('run'), label: 'RUN BOT',
-                  icon: Icons.bolt_rounded, t: t, onTap: _completeCaptureAndRun)
-              : Container(
-                  key: const ValueKey('wait'),
-                  height: 56,
-                  decoration: BoxDecoration(
-                    color: t.card, borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: t.border),
-                  ),
-                  child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                    SizedBox(width: 14, height: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: t.textSub)),
+          child: state.status == BotStatus.qrReady
+              ? Row(
+                  key: const ValueKey('qrReady'),
+                  children: [
+                    Expanded(
+                      child: _OutlineBtn(
+                        label: 'NEW RUN',
+                        icon: Icons.refresh_rounded,
+                        color: t.yellow,
+                        t: t,
+                        onTap: _captureToken,
+                      ),
+                    ),
                     const SizedBox(width: 10),
-                    Text(_isRunning ? 'Running...' : 'Waiting for login...',
-                      style: TextStyle(color: t.textSub, fontSize: 14)),
-                  ]),
-                ),
+                    Expanded(
+                      child: _PrimaryBtn(
+                        label: 'DASHBOARD',
+                        icon: Icons.dashboard_rounded,
+                        t: t,
+                        onTap: () => setState(() => _showWebView = false),
+                      ),
+                    ),
+                  ],
+                )
+              : (_isRunning
+                  ? _OutlineBtn(
+                      key: const ValueKey('stop'),
+                      label: 'STOP BOT',
+                      icon: Icons.stop_circle_outlined,
+                      color: t.red,
+                      t: t,
+                      onTap: _stopBot,
+                    )
+                  : (_loginReady
+                      ? _PrimaryBtn(
+                          key: const ValueKey('run'),
+                          label: 'RUN BOT',
+                          icon: Icons.bolt_rounded,
+                          t: t,
+                          onTap: _completeCaptureAndRun,
+                        )
+                      : Container(
+                          key: const ValueKey('wait'),
+                          height: 56,
+                          decoration: BoxDecoration(
+                            color: t.card,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: t.border),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: t.textSub,
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Text('Waiting for login...',
+                                  style: TextStyle(
+                                      color: t.textSub, fontSize: 14)),
+                            ],
+                          ),
+                        ))),
         ),
       ),
     ]);
@@ -719,7 +836,7 @@ class _OutlineBtn extends StatelessWidget {
   final Color color;
   final AppTheme t;
   final VoidCallback onTap;
-  const _OutlineBtn({required this.label, required this.icon,
+  const _OutlineBtn({super.key, required this.label, required this.icon,
     required this.color, required this.t, required this.onTap});
 
   @override

@@ -205,7 +205,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: Column(children: [
                   _InfoRow(icon: Icons.currency_rupee_rounded, color: t.yellow, t: t,
                     title: 'OTP / UPI mode',
-                    desc: 'Buys UPI orders using bank OTP. Cycles through PhonePe, GPay, Paytm etc.'),
+                    desc: 'Buys UPI orders using bank OTP. Starts with Supermoney, cycles through PhonePe, GPay, Paytm etc.'),
                   const SizedBox(height: 14),
                   _InfoRow(icon: Icons.account_balance_rounded, color: t.green, t: t,
                     title: 'Bank mode',

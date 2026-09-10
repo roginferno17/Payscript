@@ -8,7 +8,7 @@ A Flutter Android app that automates ARBPay token buying with a clean dark UI.
 - 📋 Color-coded live log (green=success, yellow=warning, red=error)
 - ⚙️ Settings screen (phone, password, amount range)
 - 🛡️ Cloudflare bypass via real Android WebView
-- 🏦 Auto bank cycling (MobiKwik → Paytm → PhonePe → GPay → etc.)
+- 🏦 Auto bank cycling (Supermoney → Paytm → PhonePe → GPay → etc.)
 - 📱 QR payment screen shown in-app when order claimed
 
 ## UI Preview

@@ -155,21 +155,21 @@ class WidgetbookApp extends StatelessWidget {
                 WidgetbookUseCase(
                   name: 'Dark — with logs',
                   builder: (_) => _withState(
-                    SizedBox(height: 300, child: LogPanel(t: AppTheme(true))),
+                    const SizedBox(height: 300, child: LogPanel(t: AppTheme(true))),
                     state: _fakeState(isDark: true),
                   ),
                 ),
                 WidgetbookUseCase(
                   name: 'Light — with logs',
                   builder: (_) => _withState(
-                    SizedBox(height: 300, child: LogPanel(t: AppTheme(false))),
+                    const SizedBox(height: 300, child: LogPanel(t: AppTheme(false))),
                     state: _fakeState(isDark: false),
                   ),
                 ),
                 WidgetbookUseCase(
                   name: 'Empty',
                   builder: (_) => _withState(
-                    SizedBox(height: 300, child: LogPanel(t: AppTheme(true))),
+                    const SizedBox(height: 300, child: LogPanel(t: AppTheme(true))),
                     state: _fakeState(logs: []),
                   ),
                 ),
