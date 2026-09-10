@@ -30,6 +30,24 @@ class AppState extends ChangeNotifier {
   PaymentMode paymentMode = PaymentMode.upi;
   bool isDark = true;
 
+  // Alerts
+  bool qrSoundEnabled = true;
+  bool qrVibrateEnabled = true;
+  bool kycSoundEnabled = true;
+  bool kycVibrateEnabled = true;
+
+  void setQrAlerts({bool? sound, bool? vibrate}) {
+    if (sound != null) qrSoundEnabled = sound;
+    if (vibrate != null) qrVibrateEnabled = vibrate;
+    notifyListeners();
+  }
+
+  void setKycAlerts({bool? sound, bool? vibrate}) {
+    if (sound != null) kycSoundEnabled = sound;
+    if (vibrate != null) kycVibrateEnabled = vibrate;
+    notifyListeners();
+  }
+
   BotStatus get status => _status;
   List<LogEntry> get logs => List.unmodifiable(_logs);
   int get rounds => _rounds;

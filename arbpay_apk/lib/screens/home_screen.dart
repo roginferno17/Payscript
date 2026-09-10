@@ -6,6 +6,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../models/app_state.dart';
 import '../services/arbpay_service.dart';
 import '../services/icon_service.dart';
+import '../services/alert_service.dart';
 import '../widgets/log_panel.dart';
 import '../theme/app_theme.dart';
 import 'settings_screen.dart';
@@ -577,12 +578,50 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           javaScriptCanOpenWindowsAutomatically: true,
           supportMultipleWindows: true,
           useHybridComposition: true,
+          useShouldOverrideUrlLoading: true,
           userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
               '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
         ),
-        onWebViewCreated: (c) { _webController = c; _service.init(c, state); },
-        onLoadStop: (c, url) async { _webController = c; await _handleUrlChange(c, url?.toString() ?? ''); },
-        onUpdateVisitedHistory: (c, url, _) async { await _handleUrlChange(c, url?.toString() ?? ''); },
+        shouldOverrideUrlLoading: (controller, navigationAction) async {
+          final uri = navigationAction.request.url;
+          if (uri != null) {
+            final urlStr = uri.toString();
+            final scheme = uri.scheme.toLowerCase();
+            // Intercept PhonePe, UPI, and other external intent deep links
+            if ((scheme != 'http' && scheme != 'https') || urlStr.startsWith('intent:')) {
+              final s = context.read<AppState>();
+              s.addLog('Redirecting to external payment app ($scheme)...', level: LogLevel.info);
+              final launched = await AlertService.launchExternalUrl(urlStr);
+              if (!launched) {
+                s.addLog('Failed to launch external app for: $urlStr', level: LogLevel.warning);
+              }
+              return NavigationActionPolicy.CANCEL;
+            }
+          }
+          return NavigationActionPolicy.ALLOW;
+        },
+        onWebViewCreated: (c) {
+          _webController = c;
+          _service.init(c, state);
+          c.addJavaScriptHandler(
+            handlerName: 'onKycCompleted',
+            callback: (args) {
+              final s = context.read<AppState>();
+              AlertService.playKycCompletedAlert(s);
+              s.addLog('KYC Confirmation Completed! Transaction verified.', level: LogLevel.success);
+              return true;
+            },
+          );
+        },
+        onLoadStop: (c, url) async {
+          _webController = c;
+          await _handleUrlChange(c, url?.toString() ?? '');
+          await _injectKycWatcher(c);
+        },
+        onUpdateVisitedHistory: (c, url, _) async {
+          await _handleUrlChange(c, url?.toString() ?? '');
+          await _injectKycWatcher(c);
+        },
         onReceivedError: (c, req, err) async {
           if (req.isForMainFrame ?? true) {
             final s = context.read<AppState>();
@@ -714,6 +753,51 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         if (mounted) setState(() => _loginReady = true);
       }
     }
+  }
+
+  Future<void> _injectKycWatcher(InAppWebViewController c) async {
+    try {
+      await c.evaluateJavascript(source: '''
+        (function() {
+          if (window.__arbKycWatcherInstalled) return;
+          window.__arbKycWatcherInstalled = true;
+          var kycWasPending = false;
+          var completedFired = false;
+
+          function checkKycState() {
+            try {
+              var bodyText = (document.body ? (document.body.innerText || document.body.textContent) : '') || '';
+              var lowerText = bodyText.toLowerCase();
+
+              // Check if KYC confirmation / awaiting confirmation is ongoing
+              var hasKycConfirm = lowerText.includes('kyc confirmation') ||
+                                  lowerText.includes('awaiting confirmation') ||
+                                  lowerText.includes('link the wallet account') ||
+                                  lowerText.includes('changing kyc');
+
+              if (hasKycConfirm) {
+                kycWasPending = true;
+              }
+
+              // Check if confirmation is done / completed
+              var isCompleted = lowerText.includes('you have completed this transaction') ||
+                                (lowerText.includes('completed') && !hasKycConfirm &&
+                                 (lowerText.includes('reward') || lowerText.includes('order amount') || lowerText.includes('utr')));
+
+              if (isCompleted && !completedFired) {
+                completedFired = true;
+                if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+                  window.flutter_inappwebview.callHandler('onKycCompleted');
+                }
+              }
+            } catch(e) {}
+          }
+
+          setInterval(checkKycState, 1000);
+          checkKycState();
+        })();
+      ''');
+    } catch (_) {}
   }
 
   Future<void> _autoFill(InAppWebViewController c) async {

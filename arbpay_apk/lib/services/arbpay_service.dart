@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:http/http.dart' as http;
 import '../models/app_state.dart';
+import 'alert_service.dart';
 
 class ArbPayService {
   static const List<String> _apiUrls = [
@@ -444,6 +445,9 @@ class ArbPayService {
           _state?.setCurrentOrder(mrOrder);
           _state?.incrementRounds();
           _state?.setStatus(BotStatus.qrReady);
+          if (_state != null) {
+            AlertService.playQrReadyAlert(_state!);
+          }
           await _reloadWebView(mrOrder);
           return;
         } else {
@@ -481,6 +485,9 @@ class ArbPayService {
           _log('Unfinished order: $existingOrder — proceeding', level: LogLevel.warning);
           _state?.setCurrentOrder(existingOrder);
           _state?.setStatus(BotStatus.qrReady);
+          if (_state != null) {
+            AlertService.playQrReadyAlert(_state!);
+          }
           await _reloadWebView(existingOrder);
           return;
         }

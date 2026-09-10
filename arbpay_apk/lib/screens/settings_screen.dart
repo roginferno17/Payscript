@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/app_state.dart';
 import '../theme/app_theme.dart';
 import '../services/icon_service.dart';
+import '../services/alert_service.dart';
 
 // Keep local constants only for things that don't change with theme
 const _yellow = Color(0xFFFFCC00);
@@ -22,6 +23,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late TextEditingController _amtMaxCtrl;
   bool _obscurePassword = true;
   late PaymentMode _paymentMode;
+  late bool _qrSound;
+  late bool _qrVibrate;
+  late bool _kycSound;
+  late bool _kycVibrate;
 
   @override
   void initState() {
@@ -32,6 +37,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _amtMinCtrl   = TextEditingController(text: state.amountMin.toString());
     _amtMaxCtrl   = TextEditingController(text: state.amountMax.toString());
     _paymentMode  = state.paymentMode;
+    _qrSound      = state.qrSoundEnabled;
+    _qrVibrate    = state.qrVibrateEnabled;
+    _kycSound     = state.kycSoundEnabled;
+    _kycVibrate   = state.kycVibrateEnabled;
   }
 
   @override
@@ -50,6 +59,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     state.amountMin    = int.tryParse(_amtMinCtrl.text) ?? 1700;
     state.amountMax    = int.tryParse(_amtMaxCtrl.text) ?? 2000;
     state.setPaymentMode(_paymentMode);
+    state.setQrAlerts(sound: _qrSound, vibrate: _qrVibrate);
+    state.setKycAlerts(sound: _kycSound, vibrate: _kycVibrate);
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('phone',       state.phone);
@@ -57,6 +68,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await prefs.setInt('amtMin',         state.amountMin);
     await prefs.setInt('amtMax',         state.amountMax);
     await prefs.setString('paymentMode', _paymentMode == PaymentMode.bank ? 'bank' : 'upi');
+    await prefs.setBool('qrSound',       _qrSound);
+    await prefs.setBool('qrVibrate',     _qrVibrate);
+    await prefs.setBool('kycSound',      _kycSound);
+    await prefs.setBool('kycVibrate',    _kycVibrate);
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -192,6 +207,77 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     icon: Icons.account_balance_rounded, selected: _paymentMode == PaymentMode.bank,
                     isLeft: false, t: t, onTap: () => setState(() => _paymentMode = PaymentMode.bank)),
                 ]),
+              ),
+              const SizedBox(height: 28),
+              _SectionLabel('NOTIFICATIONS & ALERTS', t),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: t.card, borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: t.border),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      Icon(Icons.qr_code_scanner_rounded, color: t.yellow, size: 18),
+                      const SizedBox(width: 8),
+                      Text('QR READY ALERTS', style: TextStyle(
+                        color: t.yellow, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 0.8)),
+                    ]),
+                    const SizedBox(height: 12),
+                    _AlertToggleRow(
+                      title: 'Cash Sound',
+                      subtitle: 'Play cash chime when QR is ready',
+                      icon: Icons.volume_up_rounded,
+                      value: _qrSound,
+                      t: t,
+                      onChanged: (v) => setState(() => _qrSound = v),
+                      onTest: () => AlertService.testSound('qr'),
+                    ),
+                    const SizedBox(height: 10),
+                    _AlertToggleRow(
+                      title: 'Vibration',
+                      subtitle: 'Vibrate device when QR is ready',
+                      icon: Icons.vibration_rounded,
+                      value: _qrVibrate,
+                      t: t,
+                      onChanged: (v) => setState(() => _qrVibrate = v),
+                      onTest: () => AlertService.testVibrate('qr'),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      child: Divider(color: t.border, height: 1),
+                    ),
+                    Row(children: [
+                      Icon(Icons.verified_rounded, color: t.green, size: 18),
+                      const SizedBox(width: 8),
+                      Text('KYC CONFIRMATION ALERTS', style: TextStyle(
+                        color: t.green, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 0.8)),
+                    ]),
+                    const SizedBox(height: 12),
+                    _AlertToggleRow(
+                      title: 'Coin Cascade Sound',
+                      subtitle: 'Play coin payout chime when confirmation completes',
+                      icon: Icons.volume_up_rounded,
+                      value: _kycSound,
+                      t: t,
+                      onChanged: (v) => setState(() => _kycSound = v),
+                      onTest: () => AlertService.testSound('kyc'),
+                    ),
+                    const SizedBox(height: 10),
+                    _AlertToggleRow(
+                      title: 'Vibration',
+                      subtitle: 'Double pulse vibration on transaction completion',
+                      icon: Icons.vibration_rounded,
+                      value: _kycVibrate,
+                      t: t,
+                      onChanged: (v) => setState(() => _kycVibrate = v),
+                      onTest: () => AlertService.testVibrate('kyc'),
+                    ),
+                  ],
+                ),
               ),
               const SizedBox(height: 28),
               _SectionLabel('INFO', t),
@@ -354,3 +440,76 @@ class _InfoRow extends StatelessWidget {
     ]);
   }
 }
+
+// ── Alert toggle row ───────────────────────────────────────────────────────────
+class _AlertToggleRow extends StatelessWidget {
+  final String title, subtitle;
+  final IconData icon;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+  final VoidCallback onTest;
+  final AppTheme t;
+
+  const _AlertToggleRow({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.value,
+    required this.onChanged,
+    required this.onTest,
+    required this.t,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Container(
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            color: t.yellow.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(icon, color: t.yellow, size: 16),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: TextStyle(
+                color: t.textPrimary, fontSize: 13, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 2),
+              Text(subtitle, style: TextStyle(
+                color: t.textSub, fontSize: 10)),
+            ],
+          ),
+        ),
+        GestureDetector(
+          onTap: onTest,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: t.surface,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: t.border),
+            ),
+            child: Text('TEST', style: TextStyle(
+              color: t.yellow, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.8)),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Switch(
+          value: value,
+          activeThumbColor: t.yellow,
+          activeTrackColor: t.yellowDim,
+          inactiveThumbColor: t.textDim,
+          inactiveTrackColor: t.surface,
+          onChanged: onChanged,
+        ),
+      ],
+    );
+  }
+}
+

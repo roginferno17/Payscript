@@ -20,6 +20,10 @@ void main() async {
   state.paymentMode = (prefs.getString('paymentMode') == 'bank')
       ? PaymentMode.bank : PaymentMode.upi;
   state.isDark      = prefs.getBool('isDark') ?? true;
+  state.qrSoundEnabled   = prefs.getBool('qrSound')   ?? true;
+  state.qrVibrateEnabled = prefs.getBool('qrVibrate') ?? true;
+  state.kycSoundEnabled   = prefs.getBool('kycSound')   ?? true;
+  state.kycVibrateEnabled = prefs.getBool('kycVibrate') ?? true;
 
   // Sync launcher icon with saved theme on startup
   await IconService.setIcon(isDark: state.isDark);
