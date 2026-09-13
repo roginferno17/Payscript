@@ -25,6 +25,8 @@ class MainActivity : FlutterActivity() {
     // Pending icon switch — applied when app goes to background
     private var pendingIsDark: Boolean? = null
 
+    private var activeMediaPlayer: MediaPlayer? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
@@ -70,6 +72,39 @@ class MainActivity : FlutterActivity() {
                     "vibrate" -> {
                         val type = call.argument<String>("type") ?: "qr"
                         performVibration(type)
+                        result.success(true)
+                    }
+                    "startForegroundService" -> {
+                        val title = call.argument<String>("title") ?: "ARBPay Bot Running"
+                        val text = call.argument<String>("text") ?: "Engine active"
+                        BotForegroundService.start(applicationContext, title, text)
+                        result.success(true)
+                    }
+                    "updateForegroundService" -> {
+                        val title = call.argument<String>("title") ?: "ARBPay Bot Running"
+                        val text = call.argument<String>("text") ?: ""
+                        val highPriority = call.argument<Boolean>("highPriority") ?: false
+                        BotForegroundService.update(applicationContext, title, text, highPriority)
+                        result.success(true)
+                    }
+                    "stopForegroundService" -> {
+                        BotForegroundService.stop(applicationContext)
+                        result.success(true)
+                    }
+                    "requestNotificationPermission" -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            if (androidx.core.content.ContextCompat.checkSelfPermission(
+                                    this,
+                                    android.Manifest.permission.POST_NOTIFICATIONS
+                                ) != PackageManager.PERMISSION_GRANTED
+                            ) {
+                                androidx.core.app.ActivityCompat.requestPermissions(
+                                    this,
+                                    arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+                                    101
+                                )
+                            }
+                        }
                         result.success(true)
                     }
                     else -> result.notImplemented()
@@ -118,12 +153,28 @@ class MainActivity : FlutterActivity() {
 
     private fun playAlertSound(type: String) {
         try {
+            activeMediaPlayer?.stop()
+            activeMediaPlayer?.release()
+            activeMediaPlayer = null
+
             val resId = if (type == "kyc") R.raw.kyc_completed else R.raw.qr_cash
-            val mp = MediaPlayer.create(applicationContext, resId)
-            mp?.apply {
-                setOnCompletionListener { release() }
-                start()
+            val mp = MediaPlayer.create(applicationContext, resId) ?: return
+
+            val audioAttributes = android.media.AudioAttributes.Builder()
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setUsage(android.media.AudioAttributes.USAGE_ALARM)
+                .build()
+
+            mp.setAudioAttributes(audioAttributes)
+            mp.setVolume(1.0f, 1.0f)
+            activeMediaPlayer = mp
+            mp.setOnCompletionListener {
+                it.release()
+                if (activeMediaPlayer == it) {
+                    activeMediaPlayer = null
+                }
             }
+            mp.start()
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -141,29 +192,42 @@ class MainActivity : FlutterActivity() {
 
             if (!vibrator.hasVibrator()) return
 
+            // Cancel any ongoing vibration to reset system state cleanly
+            vibrator.cancel()
+
+            val audioAttributes = android.media.AudioAttributes.Builder()
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setUsage(android.media.AudioAttributes.USAGE_ALARM)
+                .build()
+
             if (type == "kyc") {
-                // Triumphant double pulse: wait 0, buzz 100ms, pause 70ms, buzz 200ms
-                val timings = longArrayOf(0, 100, 70, 200)
-                val amplitudes = intArrayOf(0, 255, 0, 255)
+                // KYC alert: Triumphant distinct triple pulse
+                val timings = longArrayOf(0, 220, 80, 220, 80, 350)
+                val amplitudes = intArrayOf(0, 255, 0, 255, 0, 255)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    vibrator.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1))
+                    val effect = VibrationEffect.createWaveform(timings, amplitudes, -1)
+                    vibrator.vibrate(effect, audioAttributes)
                 } else {
                     @Suppress("DEPRECATION")
                     vibrator.vibrate(timings, -1)
                 }
             } else {
-                // QR ready crisp single pulse: 120ms
+                // QR ready alert: Buzz thrice loudly ("zor se") with maximum intensity (255)
+                val timings = longArrayOf(0, 380, 140, 380, 140, 500)
+                val amplitudes = intArrayOf(0, 255, 0, 255, 0, 255)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    vibrator.vibrate(VibrationEffect.createOneShot(120, VibrationEffect.DEFAULT_AMPLITUDE))
+                    val effect = VibrationEffect.createWaveform(timings, amplitudes, -1)
+                    vibrator.vibrate(effect, audioAttributes)
                 } else {
                     @Suppress("DEPRECATION")
-                    vibrator.vibrate(120)
+                    vibrator.vibrate(timings, -1)
                 }
             }
         } catch (e: Exception) {
             e.printStackTrace()
         }
     }
+
 
     private fun applyLauncherIcon(isDark: Boolean) {
         val pm = packageManager

@@ -14,6 +14,41 @@ class AlertService {
     }
   }
 
+  /// Starts the Android Foreground Service for uninterrupted background execution
+  static Future<void> startForegroundService(String title, String text) async {
+    try {
+      await _channel.invokeMethod('startForegroundService', {
+        'title': title,
+        'text': text,
+      });
+    } catch (_) {}
+  }
+
+  /// Updates the ongoing background notification with the latest log/status
+  static Future<void> updateForegroundService(String title, String text, {bool highPriority = false}) async {
+    try {
+      await _channel.invokeMethod('updateForegroundService', {
+        'title': title,
+        'text': text,
+        'highPriority': highPriority,
+      });
+    } catch (_) {}
+  }
+
+  /// Stops the Foreground Service when bot is idle/stopped
+  static Future<void> stopForegroundService() async {
+    try {
+      await _channel.invokeMethod('stopForegroundService');
+    } catch (_) {}
+  }
+
+  /// Requests notification permission on Android 13+ (API 33+)
+  static Future<void> requestNotificationPermission() async {
+    try {
+      await _channel.invokeMethod('requestNotificationPermission');
+    } catch (_) {}
+  }
+
   /// Triggers sound and/or vibration when an order is claimed and QR is ready
   static Future<void> playQrReadyAlert(AppState state) async {
     if (state.qrSoundEnabled) {
@@ -24,6 +59,20 @@ class AlertService {
     if (state.qrVibrateEnabled) {
       try {
         await _channel.invokeMethod('vibrate', {'type': 'qr'});
+      } catch (_) {}
+    }
+  }
+
+  /// Triggers sound and/or vibration when KYC Confirmation is requested / required
+  static Future<void> playKycPromptAlert(AppState state) async {
+    if (state.kycSoundEnabled) {
+      try {
+        await _channel.invokeMethod('playAlert', {'type': 'kyc'});
+      } catch (_) {}
+    }
+    if (state.kycVibrateEnabled) {
+      try {
+        await _channel.invokeMethod('vibrate', {'type': 'kyc'});
       } catch (_) {}
     }
   }

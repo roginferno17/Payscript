@@ -16,7 +16,7 @@ Future<void> _clearWebViewSession() async {
   try { await WebStorageManager.instance().deleteAllData(); } catch (_) {}
 }
 
-const kBuildVersion = 'v2.0.1';
+const kBuildVersion = 'v2.1.0';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -604,11 +604,30 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           _webController = c;
           _service.init(c, state);
           c.addJavaScriptHandler(
+            handlerName: 'onKycRequired',
+            callback: (args) {
+              final s = context.read<AppState>();
+              AlertService.playKycPromptAlert(s);
+              s.addLog('KYC Confirmation Required! Please verify on-screen.', level: LogLevel.warning);
+              AlertService.updateForegroundService(
+                '⚠️ KYC CONFIRMATION REQUIRED',
+                'Please verify transaction KYC on-screen',
+                highPriority: true,
+              );
+              return true;
+            },
+          );
+          c.addJavaScriptHandler(
             handlerName: 'onKycCompleted',
             callback: (args) {
               final s = context.read<AppState>();
               AlertService.playKycCompletedAlert(s);
               s.addLog('KYC Confirmation Completed! Transaction verified.', level: LogLevel.success);
+              AlertService.updateForegroundService(
+                '✅ KYC COMPLETED',
+                'Transaction verified and completed successfully',
+                highPriority: true,
+              );
               return true;
             },
           );
@@ -761,39 +780,61 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         (function() {
           if (window.__arbKycWatcherInstalled) return;
           window.__arbKycWatcherInstalled = true;
-          var kycWasPending = false;
+          var promptFired = false;
           var completedFired = false;
 
           function checkKycState() {
             try {
               var bodyText = (document.body ? (document.body.innerText || document.body.textContent) : '') || '';
-              var lowerText = bodyText.toLowerCase();
+              var lower = bodyText.toLowerCase();
 
-              // Check if KYC confirmation / awaiting confirmation is ongoing
-              var hasKycConfirm = lowerText.includes('kyc confirmation') ||
-                                  lowerText.includes('awaiting confirmation') ||
-                                  lowerText.includes('link the wallet account') ||
-                                  lowerText.includes('changing kyc');
+              // 1. Check if KYC confirmation / verification prompt appears
+              var isPrompt = lower.includes('kyc confirmation') ||
+                             lower.includes('awaiting confirmation') ||
+                             lower.includes('link the wallet account') ||
+                             lower.includes('changing kyc') ||
+                             lower.includes('confirm kyc') ||
+                             lower.includes('kyc verification') ||
+                             lower.includes('verify kyc') ||
+                             lower.includes('link wallet') ||
+                             lower.includes('link bank');
 
-              if (hasKycConfirm) {
-                kycWasPending = true;
-              }
-
-              // Check if confirmation is done / completed
-              var isCompleted = lowerText.includes('you have completed this transaction') ||
-                                (lowerText.includes('completed') && !hasKycConfirm &&
-                                 (lowerText.includes('reward') || lowerText.includes('order amount') || lowerText.includes('utr')));
+              // 2. Check if completion / successful transaction occurs
+              var isCompleted = lower.includes('you have completed this transaction') ||
+                                lower.includes('completed this transaction') ||
+                                lower.includes('transaction completed') ||
+                                lower.includes('order completed') ||
+                                lower.includes('payment successful') ||
+                                lower.includes('transaction success') ||
+                                lower.includes('reward credited') ||
+                                (lower.includes('completed') && !isPrompt &&
+                                 (lower.includes('reward') || lower.includes('order amount') || lower.includes('utr') || lower.includes('paid')));
 
               if (isCompleted && !completedFired) {
                 completedFired = true;
                 if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
                   window.flutter_inappwebview.callHandler('onKycCompleted');
                 }
+              } else if (isPrompt && !promptFired && !completedFired) {
+                promptFired = true;
+                if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+                  window.flutter_inappwebview.callHandler('onKycRequired');
+                }
               }
             } catch(e) {}
           }
 
-          setInterval(checkKycState, 1000);
+          // Active polling
+          setInterval(checkKycState, 800);
+
+          // DOM MutationObserver for immediate event-driven reactions
+          if (window.MutationObserver && document.body) {
+            var observer = new MutationObserver(function() {
+              checkKycState();
+            });
+            observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+          }
+
           checkKycState();
         })();
       ''');

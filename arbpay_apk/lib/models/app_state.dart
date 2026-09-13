@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import '../services/alert_service.dart';
 
 enum BotStatus { idle, connecting, cloudflare, loggingIn, capturing, running, qrReady, success, error }
 
@@ -71,6 +72,15 @@ class AppState extends ChangeNotifier {
 
   void setStatus(BotStatus s) {
     _status = s;
+    if (s == BotStatus.qrReady) {
+      AlertService.updateForegroundService(
+        '🔥 ORDER CLAIMED! QR Ready',
+        _currentOrder.isNotEmpty ? 'Order: $_currentOrder' : 'Tap to complete payment',
+        highPriority: true,
+      );
+    } else if (s == BotStatus.idle || s == BotStatus.error) {
+      AlertService.stopForegroundService();
+    }
     notifyListeners();
   }
 
@@ -80,6 +90,13 @@ class AppState extends ChangeNotifier {
         '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
     _logs.insert(0, LogEntry(time: time, message: message, level: level));
     if (_logs.length > 200) _logs.removeLast();
+
+    if (_status == BotStatus.running || _status == BotStatus.capturing) {
+      AlertService.updateForegroundService(
+        'ARBPay Bot [${_status.name.toUpperCase()}] • R:$_rounds • W:$_successCount',
+        message,
+      );
+    }
     notifyListeners();
   }
 
@@ -107,6 +124,7 @@ class AppState extends ChangeNotifier {
     _status = BotStatus.idle;
     _attempts = 0;
     _currentOrder = '';
+    AlertService.stopForegroundService();
     notifyListeners();
   }
 
@@ -115,6 +133,7 @@ class AppState extends ChangeNotifier {
     _attempts = 0;
     _currentOrder = '';
     _logs.clear();
+    AlertService.stopForegroundService();
     notifyListeners();
   }
 
@@ -123,3 +142,4 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 }
+

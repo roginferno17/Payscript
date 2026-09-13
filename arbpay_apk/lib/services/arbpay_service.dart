@@ -53,6 +53,7 @@ class ArbPayService {
   }
 
   void resetSessionAndCache() {
+    _running = false;
     _skippedOrders.clear();
     _seenBuyCodes.clear();
     _bankIndex = 0;
@@ -68,6 +69,7 @@ class ArbPayService {
 
   void dispose() {
     stop();
+    AlertService.stopForegroundService();
     try { _httpClient?.close(); } catch (_) {}
     _httpClient = null;
     _webView = null;
@@ -83,12 +85,17 @@ class ArbPayService {
     final mode = _state?.paymentMode == PaymentMode.bank ? 'Bank' : 'OTP/UPI';
     _log('Capturing token from active session... [Mode: $mode]', level: LogLevel.info);
 
+    await AlertService.requestNotificationPermission();
+    await AlertService.startForegroundService(
+      'ARBPay Bot Running',
+      'Capturing token from active session... [Mode: $mode]',
+    );
+
     try {
       await _buildApiSession();
       if (_token.isEmpty) {
         _log('Token not found — make sure you are logged in', level: LogLevel.error);
         _state?.setStatus(BotStatus.error);
-        _running = false;
         return;
       }
       _log('Token captured! Starting buy loop...', level: LogLevel.success);
@@ -100,15 +107,21 @@ class ArbPayService {
     } catch (e) {
       _log('Fatal error: $e', level: LogLevel.error);
       _state?.setStatus(BotStatus.error);
+    } finally {
       _running = false;
+      if (_state?.status != BotStatus.qrReady) {
+        AlertService.stopForegroundService();
+      }
     }
   }
 
   void stop() {
     _running = false;
     _state?.setStatus(BotStatus.idle);
+    AlertService.stopForegroundService();
     _log('Bot stopped by user', level: LogLevel.warning);
   }
+
 
   // ── Extract token from WebView localStorage ───────────────────────────────
   // Mirrors Python build_api_session exactly:
