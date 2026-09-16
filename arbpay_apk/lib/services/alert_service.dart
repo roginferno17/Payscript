@@ -49,7 +49,27 @@ class AlertService {
     } catch (_) {}
   }
 
-  /// Triggers sound and/or vibration when an order is claimed and QR is ready
+  /// Stops any active or repeating vibration immediately
+  static Future<void> stopVibration() async {
+    try {
+      await _channel.invokeMethod('stopVibrate');
+    } catch (_) {}
+  }
+
+  /// Triggers a heads-up banner notification popup
+  static Future<void> showQrReadyNotification({
+    String title = '🔥 ORDER CLAIMED! QR Ready',
+    String text = 'Tap to open payment screen and complete order',
+  }) async {
+    try {
+      await _channel.invokeMethod('showQrReadyNotification', {
+        'title': title,
+        'text': text,
+      });
+    } catch (_) {}
+  }
+
+  /// Triggers sound, heads-up notification popup, and vibration when an order is claimed and QR is ready
   static Future<void> playQrReadyAlert(AppState state) async {
     if (state.qrSoundEnabled) {
       try {
@@ -57,10 +77,17 @@ class AlertService {
       } catch (_) {}
     }
     if (state.qrVibrateEnabled) {
+      final vibeType = state.aggressiveAlertEnabled ? 'qr_aggressive' : 'qr';
       try {
-        await _channel.invokeMethod('vibrate', {'type': 'qr'});
+        await _channel.invokeMethod('vibrate', {'type': vibeType});
       } catch (_) {}
     }
+    await showQrReadyNotification(
+      title: '🔥 ORDER CLAIMED! QR Ready',
+      text: state.currentOrder.isNotEmpty
+          ? 'Order: ${state.currentOrder} — Tap to complete payment'
+          : 'Tap to complete payment',
+    );
   }
 
   /// Triggers sound and/or vibration when KYC Confirmation is requested / required

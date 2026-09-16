@@ -36,6 +36,12 @@ class AppState extends ChangeNotifier {
   bool qrVibrateEnabled = true;
   bool kycSoundEnabled = true;
   bool kycVibrateEnabled = true;
+  bool aggressiveAlertEnabled = false;
+
+  void setAggressiveAlert(bool enabled) {
+    aggressiveAlertEnabled = enabled;
+    notifyListeners();
+  }
 
   void setQrAlerts({bool? sound, bool? vibrate}) {
     if (sound != null) qrSoundEnabled = sound;
@@ -77,6 +83,10 @@ class AppState extends ChangeNotifier {
         '🔥 ORDER CLAIMED! QR Ready',
         _currentOrder.isNotEmpty ? 'Order: $_currentOrder' : 'Tap to complete payment',
         highPriority: true,
+      );
+      AlertService.showQrReadyNotification(
+        title: '🔥 ORDER CLAIMED! QR Ready',
+        text: _currentOrder.isNotEmpty ? 'Order: $_currentOrder — Tap to pay' : 'Tap to complete payment',
       );
     } else if (s == BotStatus.idle || s == BotStatus.error) {
       AlertService.stopForegroundService();

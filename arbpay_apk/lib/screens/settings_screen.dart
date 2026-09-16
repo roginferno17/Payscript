@@ -27,6 +27,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late bool _qrVibrate;
   late bool _kycSound;
   late bool _kycVibrate;
+  late bool _aggressiveAlert;
 
   @override
   void initState() {
@@ -41,6 +42,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _qrVibrate    = state.qrVibrateEnabled;
     _kycSound     = state.kycSoundEnabled;
     _kycVibrate   = state.kycVibrateEnabled;
+    _aggressiveAlert = state.aggressiveAlertEnabled;
   }
 
   @override
@@ -61,6 +63,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     state.setPaymentMode(_paymentMode);
     state.setQrAlerts(sound: _qrSound, vibrate: _qrVibrate);
     state.setKycAlerts(sound: _kycSound, vibrate: _kycVibrate);
+    state.setAggressiveAlert(_aggressiveAlert);
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('phone',       state.phone);
@@ -72,6 +75,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await prefs.setBool('qrVibrate',     _qrVibrate);
     await prefs.setBool('kycSound',      _kycSound);
     await prefs.setBool('kycVibrate',    _kycVibrate);
+    await prefs.setBool('aggressiveAlert', _aggressiveAlert);
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -245,6 +249,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       t: t,
                       onChanged: (v) => setState(() => _qrVibrate = v),
                       onTest: () => AlertService.testVibrate('qr'),
+                    ),
+                    const SizedBox(height: 10),
+                    _AlertToggleRow(
+                      title: 'Aggressive Alert',
+                      subtitle: 'Continuous repeating buzz (beepbeepbeep) until tapped. Popup opens payment.',
+                      icon: Icons.notifications_active_rounded,
+                      value: _aggressiveAlert,
+                      t: t,
+                      onChanged: (v) => setState(() => _aggressiveAlert = v),
+                      onTest: () async {
+                        await AlertService.testVibrate('qr_aggressive');
+                        await Future.delayed(const Duration(milliseconds: 3200));
+                        await AlertService.stopVibration();
+                      },
                     ),
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 14),

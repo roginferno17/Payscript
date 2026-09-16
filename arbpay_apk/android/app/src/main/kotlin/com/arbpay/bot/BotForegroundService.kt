@@ -21,13 +21,19 @@ class BotForegroundService : Service() {
         const val CHANNEL_NAME = "ARBPay Bot Active Session"
         const val NOTIFICATION_ID = 1001
 
+        const val ALERTS_CHANNEL_ID = "arbpay_bot_alerts_channel"
+        const val ALERTS_CHANNEL_NAME = "ARBPay Order Alerts"
+        const val ALERT_NOTIFICATION_ID = 2001
+
         const val ACTION_START = "com.arbpay.bot.action.START"
         const val ACTION_UPDATE = "com.arbpay.bot.action.UPDATE"
         const val ACTION_STOP = "com.arbpay.bot.action.STOP"
+        const val ACTION_OPEN_PAYMENT = "com.arbpay.bot.action.OPEN_PAYMENT"
 
         const val EXTRA_TITLE = "extra_title"
         const val EXTRA_TEXT = "extra_text"
         const val EXTRA_HIGH_PRIORITY = "extra_high_priority"
+        const val EXTRA_OPEN_PAYMENT = "open_payment"
 
         var isRunning = false
             private set
@@ -57,6 +63,62 @@ class BotForegroundService : Service() {
             } catch (_: Exception) {}
         }
 
+        fun showHeadsUpAlert(context: Context, title: String = "🔥 ORDER CLAIMED! QR Ready", text: String = "Tap to open payment screen") {
+            try {
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    val alertChannel = NotificationChannel(
+                        ALERTS_CHANNEL_ID,
+                        ALERTS_CHANNEL_NAME,
+                        NotificationManager.IMPORTANCE_HIGH
+                    ).apply {
+                        description = "Heads-up popups and alerts when orders are claimed and QR is ready"
+                        setShowBadge(true)
+                        lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                        enableVibration(true)
+                    }
+                    nm.createNotificationChannel(alertChannel)
+                }
+
+                val launchIntent = (context.packageManager.getLaunchIntentForPackage(context.packageName) ?: Intent(context, MainActivity::class.java)).apply {
+                    action = ACTION_OPEN_PAYMENT
+                    putExtra(EXTRA_OPEN_PAYMENT, true)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                }
+
+                val pendingIntent = PendingIntent.getActivity(
+                    context,
+                    ALERT_NOTIFICATION_ID,
+                    launchIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+                )
+
+                val notification = NotificationCompat.Builder(context, ALERTS_CHANNEL_ID)
+                    .setContentTitle(title)
+                    .setContentText(text)
+                    .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                    .setSmallIcon(R.mipmap.ic_launcher)
+                    .setContentIntent(pendingIntent)
+                    .setFullScreenIntent(pendingIntent, true)
+                    .setPriority(NotificationCompat.PRIORITY_MAX)
+                    .setCategory(NotificationCompat.CATEGORY_ALARM)
+                    .setAutoCancel(true)
+                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                    .build()
+
+                nm.notify(ALERT_NOTIFICATION_ID, notification)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        fun cancelHeadsUpAlert(context: Context) {
+            try {
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                nm.cancel(ALERT_NOTIFICATION_ID)
+            } catch (_: Exception) {}
+        }
+
         fun stop(context: Context) {
             val intent = Intent(context, BotForegroundService::class.java).apply {
                 action = ACTION_STOP
@@ -64,6 +126,7 @@ class BotForegroundService : Service() {
             try {
                 context.startService(intent)
             } catch (_: Exception) {}
+            cancelHeadsUpAlert(context)
         }
     }
 
@@ -153,6 +216,18 @@ class BotForegroundService : Service() {
                 setShowBadge(false)
             }
             nm.createNotificationChannel(channel)
+
+            val alertChannel = NotificationChannel(
+                ALERTS_CHANNEL_ID,
+                ALERTS_CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Heads-up popups and alerts when orders are claimed and QR is ready"
+                setShowBadge(true)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                enableVibration(true)
+            }
+            nm.createNotificationChannel(alertChannel)
         }
     }
 

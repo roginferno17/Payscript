@@ -16,7 +16,7 @@ Future<void> _clearWebViewSession() async {
   try { await WebStorageManager.instance().deleteAllData(); } catch (_) {}
 }
 
-const kBuildVersion = 'v2.1.0';
+const kBuildVersion = 'v2.1.1';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -64,6 +64,17 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _pulseAnim = Tween<double>(begin: 0.4, end: 1.0).animate(
       CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut),
     );
+
+    const MethodChannel('com.arbpay.bot/device').setMethodCallHandler((call) async {
+      if (call.method == 'onOpenPaymentScreen') {
+        await AlertService.stopVibration();
+        if (mounted) {
+          setState(() {
+            _showWebView = true;
+          });
+        }
+      }
+    });
   }
 
   @override
@@ -151,11 +162,118 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           child: Scaffold(
             backgroundColor: t.bg,
             body: SafeArea(
-              child: _showWebView ? _buildWebView(state, t) : _buildMain(state, t),
+              child: Stack(
+                children: [
+                  _showWebView ? _buildWebView(state, t) : _buildMain(state, t),
+                  if (state.status == BotStatus.qrReady && !_showWebView)
+                    _buildQrReadyInAppPopup(state, t),
+                ],
+              ),
             ),
           ),
         );
       },
+    );
+  }
+
+  Widget _buildQrReadyInAppPopup(AppState state, AppTheme t) {
+    return Positioned(
+      top: 12,
+      left: 16,
+      right: 16,
+      child: Material(
+        elevation: 12,
+        borderRadius: BorderRadius.circular(16),
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () async {
+            await AlertService.stopVibration();
+            if (mounted) {
+              setState(() {
+                _showWebView = true;
+              });
+            }
+          },
+          borderRadius: BorderRadius.circular(16),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFFE53935), Color(0xFFC62828)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFFE53935).withValues(alpha: 0.45),
+                  blurRadius: 18,
+                  offset: const Offset(0, 6),
+                ),
+              ],
+              border: Border.all(color: Colors.white.withValues(alpha: 0.3), width: 1.5),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.qr_code_2_rounded, color: Colors.white, size: 26),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text(
+                        '🔥 ORDER CLAIMED! QR READY',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 13,
+                          letterSpacing: 0.8,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        state.currentOrder.isNotEmpty
+                            ? 'Order: ${state.currentOrder} • Tap to pay & stop alert'
+                            : 'Tap to open payment screen & silence vibration',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.95),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text(
+                    'PAY',
+                    style: TextStyle(
+                      color: Color(0xFFC62828),
+                      fontWeight: FontWeight.w900,
+                      fontSize: 12,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -607,6 +725,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             handlerName: 'onKycRequired',
             callback: (args) {
               final s = context.read<AppState>();
+              if (s.status != BotStatus.qrReady) return true;
               AlertService.playKycPromptAlert(s);
               s.addLog('KYC Confirmation Required! Please verify on-screen.', level: LogLevel.warning);
               AlertService.updateForegroundService(
@@ -621,6 +740,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             handlerName: 'onKycCompleted',
             callback: (args) {
               final s = context.read<AppState>();
+              if (s.status != BotStatus.qrReady) return true;
               AlertService.playKycCompletedAlert(s);
               s.addLog('KYC Confirmation Completed! Transaction verified.', level: LogLevel.success);
               AlertService.updateForegroundService(
@@ -635,11 +755,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         onLoadStop: (c, url) async {
           _webController = c;
           await _handleUrlChange(c, url?.toString() ?? '');
-          await _injectKycWatcher(c);
+          if (state.status == BotStatus.qrReady) {
+            await _injectKycWatcher(c);
+          }
         },
         onUpdateVisitedHistory: (c, url, _) async {
           await _handleUrlChange(c, url?.toString() ?? '');
-          await _injectKycWatcher(c);
+          if (state.status == BotStatus.qrReady) {
+            await _injectKycWatcher(c);
+          }
         },
         onReceivedError: (c, req, err) async {
           if (req.isForMainFrame ?? true) {
@@ -791,13 +915,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               // 1. Check if KYC confirmation / verification prompt appears
               var isPrompt = lower.includes('kyc confirmation') ||
                              lower.includes('awaiting confirmation') ||
-                             lower.includes('link the wallet account') ||
-                             lower.includes('changing kyc') ||
                              lower.includes('confirm kyc') ||
                              lower.includes('kyc verification') ||
-                             lower.includes('verify kyc') ||
-                             lower.includes('link wallet') ||
-                             lower.includes('link bank');
+                             lower.includes('verify kyc');
 
               // 2. Check if completion / successful transaction occurs
               var isCompleted = lower.includes('you have completed this transaction') ||

@@ -24,6 +24,7 @@ void main() async {
   state.qrVibrateEnabled = prefs.getBool('qrVibrate') ?? true;
   state.kycSoundEnabled   = prefs.getBool('kycSound')   ?? true;
   state.kycVibrateEnabled = prefs.getBool('kycVibrate') ?? true;
+  state.aggressiveAlertEnabled = prefs.getBool('aggressiveAlert') ?? false;
 
   // Sync launcher icon with saved theme on startup
   await IconService.setIcon(isDark: state.isDark);
