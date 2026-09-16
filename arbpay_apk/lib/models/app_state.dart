@@ -26,8 +26,8 @@ class AppState extends ChangeNotifier {
   // Settings
   String phone = '';
   String password = '';
-  int amountMin = 1700;
-  int amountMax = 2000;
+  int amountMin = 1000;
+  int amountMax = 1000;
   PaymentMode paymentMode = PaymentMode.upi;
   bool isDark = true;
 

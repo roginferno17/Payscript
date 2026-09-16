@@ -15,8 +15,8 @@ void main() async {
   final state = AppState();
   state.phone       = prefs.getString('phone')    ?? '';
   state.password    = prefs.getString('password') ?? '';
-  state.amountMin   = prefs.getInt('amtMin')      ?? 1700;
-  state.amountMax   = prefs.getInt('amtMax')      ?? 2000;
+  state.amountMin   = prefs.getInt('amtMin')      ?? 1000;
+  state.amountMax   = prefs.getInt('amtMax')      ?? 1000;
   state.paymentMode = (prefs.getString('paymentMode') == 'bank')
       ? PaymentMode.bank : PaymentMode.upi;
   state.isDark      = prefs.getBool('isDark') ?? true;

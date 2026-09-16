@@ -58,8 +58,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final state = context.read<AppState>();
     state.phone        = _phoneCtrl.text.trim();
     state.password     = _passwordCtrl.text;
-    state.amountMin    = int.tryParse(_amtMinCtrl.text) ?? 1700;
-    state.amountMax    = int.tryParse(_amtMaxCtrl.text) ?? 2000;
+    state.amountMin    = int.tryParse(_amtMinCtrl.text) ?? 1000;
+    state.amountMax    = int.tryParse(_amtMaxCtrl.text) ?? 1000;
     state.setPaymentMode(_paymentMode);
     state.setQrAlerts(sound: _qrSound, vibrate: _qrVibrate);
     state.setKycAlerts(sound: _kycSound, vibrate: _kycVibrate);

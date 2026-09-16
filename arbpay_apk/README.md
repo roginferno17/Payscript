@@ -95,5 +95,6 @@ sdk.dir=/path/to/android/sdk
 |---------|---------|-------------|
 | Phone | (set in app) | Login phone number |
 | Password | (set in app) | Login password |
-| Amount Min | ₹1700 | Minimum order amount |
-| Amount Max | ₹2000 | Maximum order amount |
+| Amount Min | ₹1000 | Minimum order amount |
+| Amount Max | ₹1000 | Maximum order amount |
+| Aggressive Alert | Off | Continuous high-intensity repeating buzz pattern & popup |
