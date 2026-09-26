@@ -106,11 +106,12 @@ def build_driver(browser: str, headless: bool):
 _api_driver = None      # Selenium WebDriver used for all fetch() calls
 _api_token      = ""
 _api_device_code = ""
+_api_member_id   = ""
 
 
 def build_api_session(driver):
-    """Extract token + deviceCode from localStorage; store driver for fetch() calls."""
-    global _api_driver, _api_token, _api_device_code
+    """Extract token + deviceCode + memberId from localStorage; store driver for fetch() calls."""
+    global _api_driver, _api_token, _api_device_code, _api_member_id, API_URL
     try:
         ls = driver.execute_script(
             "return Object.entries(window.localStorage)"
@@ -118,6 +119,34 @@ def build_api_session(driver):
         )
         token       = json.loads(ls.get("token",      "{}")).get("value", "")
         device_code = json.loads(ls.get("deviceCode", "{}")).get("value", "")
+
+        member_raw = ls.get("memberId", "")
+        if member_raw.startswith("{"):
+            try:
+                member_id = json.loads(member_raw).get("value", "")
+            except Exception:
+                member_id = member_raw
+        else:
+            member_id = member_raw
+
+        if not member_id:
+            for k, v in ls.items():
+                if "member" in k.lower() or "userid" in k.lower():
+                    if v and str(v).isdigit():
+                        member_id = str(v)
+                        break
+
+        # Check dynamic API domain in runtime-domains:PRO
+        rd_raw = ls.get("runtime-domains:PRO")
+        if rd_raw:
+            try:
+                rd = json.loads(rd_raw)
+                act_api = rd.get("selections", {}).get("api")
+                if act_api and act_api.startswith("http"):
+                    API_URL = act_api.rstrip("/")
+                    log(f"Dynamic API host: {API_URL}")
+            except Exception:
+                pass
     except Exception as e:
         log(f"Could not read localStorage: {e}")
         return None
@@ -129,7 +158,8 @@ def build_api_session(driver):
     _api_driver      = driver
     _api_token       = token
     _api_device_code = device_code
-    log(f"API session built — token ends ...{token[-12:]} (browser-fetch mode)")
+    _api_member_id   = member_id
+    log(f"API session built — token ends ...{token[-12:]} | memberId: {member_id or '(none)'} (browser-fetch mode)")
     return driver   # truthy sentinel so callers know session is ready
 
 
@@ -139,7 +169,7 @@ def browser_fetch(path: str, body: dict, page: str = "Arb") -> dict:
     Runs via execute_script (blocking) — no async timeout issues.
     Returns parsed JSON dict, or {} on error.
     """
-    global _api_driver, _api_token, _api_device_code
+    global _api_driver, _api_token, _api_device_code, _api_member_id
     if not _api_driver:
         return {}
     js = """
@@ -148,6 +178,9 @@ xhr.open('POST', arguments[0], false);
 xhr.setRequestHeader('Accept', 'application/json, text/plain, */*');
 xhr.setRequestHeader('Content-Type', 'application/json');
 xhr.setRequestHeader('authorization', 'Bearer ' + arguments[2]);
+if (arguments[5]) {
+  xhr.setRequestHeader('memberId', arguments[5]);
+}
 xhr.setRequestHeader('deviceCode', arguments[3]);
 xhr.setRequestHeader('deviceId', '');
 xhr.setRequestHeader('deviceType', '3');
@@ -168,6 +201,7 @@ try {
             _api_token,
             _api_device_code,
             page,
+            _api_member_id,
         )
         if not result:
             return {}
@@ -244,20 +278,27 @@ def api_get_order_list(amount_min: int = 100, amount_max: int = 1000):
         return []
 
 
-def api_before_buy(platform_order: str, amount: int) -> dict:
-    return browser_fetch("/ar-wallet/buyCenter/beforeBuy",
-                         {"amount": amount, "platformOrder": platform_order,
-                          "payType": "3", "orderType": 1})
+def api_before_buy(platform_order: str, amount: int, buy_bank_code: str = "",
+                   pay_type: str = "3", order_type: int = 1) -> dict:
+    payload = {
+        "amount": amount,
+        "platformOrder": platform_order,
+        "payType": pay_type,
+        "orderType": order_type,
+    }
+    if pay_type == "3" and buy_bank_code:
+        payload["buyBankCode"] = buy_bank_code
+    return browser_fetch("/ar-wallet/buyCenter/beforeBuy", payload)
 
 
 # Bank codes to cycle through when server rejects the current one (code 2005)
 BANK_CODES = [
-    "supermoney", "paytm", "phonepe", "gpay", "mobikwik", "amazonpay", "freecharge", "airtel",
-    "freo", "slice", "twid", "pop", "navi", "moneyView", "induspay", "jio"
+    "paytm", "phonepe", "gpay", "supermoney", "mobikwik", "freeCharge", "airtel",
+    "jio", "freo", "slice", "twid", "pop", "navi", "moneyView", "induspay"
 ]
 
 def api_buy(platform_order: str, amount: int,
-            buy_bank_code: str = "supermoney", buyer_kyc_id: int = 0,
+            buy_bank_code: str = "paytm", buyer_kyc_id: int = 0,
             pay_type: str = "3", order_type: int = 1) -> dict:
     payload = {
         "amount": amount,
@@ -304,13 +345,11 @@ def api_fast_buy_loop(amount_min: int = 100, amount_max: int = 1000, driver=None
     fetch_fail_streak = 0        # consecutive empty fetch() responses
 
     while True:
-        attempts += 1
-
         orders = api_get_order_list(amount_min, amount_max)
         if not orders:
             empty_streak += 1
             if empty_streak % 20 == 0:
-                log(f"No orders in range {amount_min}-{amount_max} (attempt {attempts})...")
+                log(f"Searching for orders in range {amount_min}-{amount_max} ({empty_streak} checks)...")
             # If fetch keeps returning nothing, try to rebuild the session
             if empty_streak >= 100:
                 log("[WARN] 100 consecutive empty buyList — rebuilding API session")
@@ -344,13 +383,25 @@ def api_fast_buy_loop(amount_min: int = 100, amount_max: int = 1000, driver=None
             time.sleep(0.05)
             continue
 
-        if attempts == 1 or attempts % 50 == 0:
-            log(f"API attempt {attempts}: order={platform_order} amount={amount}")
-
-        # Skip beforeBuy — go straight to buy to win the race.
+        attempts += 1
         current_bank = BANK_CODES[bank_index % len(BANK_CODES)]
-        buy_resp = api_buy(platform_order, amount, buy_bank_code=current_bank)
+        log(f"API attempt {attempts}: order={platform_order} amount={amount} [bank={current_bank}]")
+
+        # Two-step claim: call beforeBuy first to reserve/claim order slot
+        buy_resp = api_before_buy(platform_order, amount, buy_bank_code=current_bank)
         buy_code = str(buy_resp.get("code", ""))
+
+        if buy_code in ("200", "0", "1", "00", "success", "SUCCESS"):
+            mr_order = extract_mr_order(buy_resp)
+            if mr_order:
+                log(f"Buy SUCCESS via beforeBuy after {attempts} attempts — MR order: {mr_order}")
+                return mr_order, amount
+            # If slot reserved, finalize with /buy
+            buy_resp = api_buy(platform_order, amount, buy_bank_code=current_bank)
+            buy_code = str(buy_resp.get("code", ""))
+        elif not buy_resp or buy_code in ("404", "500"):
+            buy_resp = api_buy(platform_order, amount, buy_bank_code=current_bank)
+            buy_code = str(buy_resp.get("code", ""))
 
         # Detect fetch() failures (empty dict = network/session error)
         if not buy_resp:

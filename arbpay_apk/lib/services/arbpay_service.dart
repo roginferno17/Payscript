@@ -13,10 +13,10 @@ class ArbPayService {
     'https://apiweb.asjoby.com',
     'https://apiweb.arbpay.me',
   ];
-  static const String _apiUrl = 'https://apiweb.apiarbpay.com';
+  String _apiUrl = 'https://apiweb.apiarbpay.com';
   static const List<String> _bankCodes = [
-    'supermoney', 'paytm', 'phonepe', 'gpay', 'mobikwik', 'amazonpay', 'freecharge', 'airtel',
-    'freo', 'slice', 'twid', 'pop', 'navi', 'moneyView', 'induspay', 'jio'
+    'paytm', 'phonepe', 'gpay', 'supermoney', 'mobikwik', 'freeCharge', 'airtel',
+    'jio', 'freo', 'slice', 'twid', 'pop', 'navi', 'moneyView', 'induspay'
   ];
 
   InAppWebViewController? _webView;
@@ -24,6 +24,7 @@ class ArbPayService {
   bool _running = false;
   String _token = '';
   String _deviceCode = '';
+  String _memberId = '';
   int _bankIndex = 0;
   final Set<String> _skippedOrders = {};
   final Set<String> _seenBuyCodes = {};   // mirrors Python _seen_codes
@@ -45,7 +46,6 @@ class ArbPayService {
   bool _nativeEnabled = true;     // disabled after repeated CF blocks
   int _nativeBlockStreak = 0;     // consecutive native CF blocks
   DateTime? _nativeDisabledUntil; // temporary cooldown instead of permanent disable
-  static const int _buyConcurrency = 3;
 
   void init(InAppWebViewController controller, AppState state) {
     _webView = controller;
@@ -60,6 +60,7 @@ class ArbPayService {
     _ordersAllBanksRejected = 0;
     _token = '';
     _deviceCode = '';
+    _memberId = '';
     _cookieHeader = '';
     _nativeBlockStreak = 0;
     _nativeDisabledUntil = null;
@@ -164,12 +165,41 @@ class ArbPayService {
       _deviceCode = dcParsed['value']?.toString() ?? '';
     } catch (_) {}
 
-    // Fallback: scan all keys for token/auth/jwt patterns
-    if (_token.isEmpty) {
+    // Extract memberId (critical for ARBPay gateway authorization)
+    try {
+      final memRaw = lsMap['memberId']?.toString() ?? '';
+      if (memRaw.isNotEmpty && !memRaw.startsWith('{')) {
+        _memberId = memRaw;
+      } else if (memRaw.startsWith('{')) {
+        final memParsed = jsonDecode(memRaw) as Map;
+        _memberId = (memParsed['value'] ?? '').toString();
+      }
+      if (_memberId.isNotEmpty) {
+        _log('memberId found at "memberId": $_memberId', level: LogLevel.success);
+      }
+    } catch (_) {}
+
+    // Dynamic API domain from runtime-domains:PRO probe selections
+    try {
+      final rdRaw = lsMap['runtime-domains:PRO']?.toString();
+      if (rdRaw != null && rdRaw.isNotEmpty) {
+        final rd = jsonDecode(rdRaw);
+        if (rd is Map && rd['selections'] is Map) {
+          final activeApi = rd['selections']['api']?.toString();
+          if (activeApi != null && activeApi.startsWith('http')) {
+            _apiUrl = activeApi.replaceAll(RegExp(r'/+$'), '');
+            _log('Dynamic active API domain: $_apiUrl', level: LogLevel.info);
+          }
+        }
+      }
+    } catch (_) {}
+
+    // Fallback: scan all keys for token/auth/jwt and memberId patterns
+    if (_token.isEmpty || _memberId.isEmpty) {
       for (final entry in lsMap.entries) {
         final key = entry.key.toLowerCase();
         final val = entry.value?.toString() ?? '';
-        if (key.contains('token') || key.contains('auth') || key.contains('jwt')) {
+        if (_token.isEmpty && (key.contains('token') || key.contains('auth') || key.contains('jwt'))) {
           if (val.length > 20 && !val.startsWith('{')) {
             _token = val;
             _log('Token found at key "${entry.key}"', level: LogLevel.success);
@@ -193,6 +223,21 @@ class ArbPayService {
             try {
               final parsed = jsonDecode(val) as Map;
               _deviceCode = (parsed['value'] ?? parsed['deviceCode'] ?? '').toString();
+            } catch (_) {}
+          }
+        }
+        if (_memberId.isEmpty && (key.contains('member') || key.contains('userid'))) {
+          if (val.isNotEmpty && !val.startsWith('{') && RegExp(r'^\d+$').hasMatch(val)) {
+            _memberId = val;
+            _log('memberId found at key "${entry.key}": $_memberId', level: LogLevel.info);
+          } else if (val.startsWith('{')) {
+            try {
+              final parsed = jsonDecode(val) as Map;
+              final m = (parsed['value'] ?? parsed['memberId'] ?? parsed['id'] ?? '').toString();
+              if (m.isNotEmpty && RegExp(r'^\d+$').hasMatch(m)) {
+                _memberId = m;
+                _log('memberId found nested at key "${entry.key}": $_memberId', level: LogLevel.info);
+              }
             } catch (_) {}
           }
         }
@@ -227,7 +272,7 @@ class ArbPayService {
 
     if (_token.isNotEmpty) {
       _log(
-        'API session ready — token ...${_token.length > 12 ? _token.substring(_token.length - 12) : _token}',
+        'API session ready — token ...${_token.length > 12 ? _token.substring(_token.length - 12) : _token}, memberId: ${_memberId.isEmpty ? "(none)" : _memberId}',
         level: LogLevel.success,
       );
     } else {
@@ -342,9 +387,6 @@ class ArbPayService {
     int verboseBuyCount = 0;
 
     while (_running) {
-      _state?.incrementAttempts();
-      final attempts = _state?.attempts ?? 0;
-
       if (_token.isEmpty) {
         _log('No token — waiting 3s', level: LogLevel.warning);
         await Future.delayed(const Duration(seconds: 3));
@@ -398,15 +440,19 @@ class ArbPayService {
           ? (int.tryParse(order['orderType'].toString()) ?? orderType)
           : orderType;
 
+      // Increment attempt counter ONLY when an actual buy is executed!
+      _state?.incrementAttempts();
+      final attempts = _state?.attempts ?? 0;
+
       final isOrderBank = targetPayType == '1' || targetOrderType == 2;
-      final bankLabel = isOrderBank ? 'Bank Transfer' : 'bank=${_activeBanks[_bankIndex % _activeBanks.length]}';
+      final currentBank = isOrderBank ? '' : _activeBanks[_bankIndex % _activeBanks.length];
+      final bankLabel = isOrderBank ? 'Bank Transfer' : 'bank=$currentBank';
       _log('Attempt #$attempts → order=$platformOrder ₹$amount [$bankLabel]',
           level: LogLevel.info);
 
-      // ── buy ───────────────────────────────────────────────────────────────
-      final currentBank = isOrderBank ? '' : _activeBanks[_bankIndex % _activeBanks.length];
+      // ── buy (two-step beforeBuy + buy claiming) ──────────────────────────
       verboseBuyCount++;
-      final buyResp = await _apiBuyRace(platformOrder, amount, currentBank,
+      final buyResp = await _claimOrder(platformOrder, amount, currentBank,
           payType: targetPayType, orderType: targetOrderType,
           verbose: verboseBuyCount <= 5);
 
@@ -475,14 +521,9 @@ class ArbPayService {
             _skippedOrders.add(platformOrder);
             _bankIndex = 0;
             _ordersAllBanksRejected++;
-            if (_ordersAllBanksRejected >= 15) {
-              _log('STOP: $_ordersAllBanksRejected orders in a row rejected by EVERY bank '
-                  '(${_activeBanks.join(", ")}). None of your payment banks appear to be '
-                  'enabled on the site. Fix your bound banks / switch payment mode in '
-                  'Settings, then start again.', level: LogLevel.error);
-              _state?.setStatus(BotStatus.error);
-              _running = false;
-              return;
+            if (_ordersAllBanksRejected % 5 == 0) {
+              _log('Notice: $_ordersAllBanksRejected orders rejected by current bank cycle. Continuing scan...',
+                  level: LogLevel.warning);
             }
           }
         } else {
@@ -493,7 +534,7 @@ class ArbPayService {
         continue;
       } else if (code == '1027') {
         final data = buyResp['data'];
-        final existingOrder = (data is Map ? (data['platformOrder'] ?? '') : '').toString();
+        final existingOrder = (data is Map ? (data['platformOrder'] ?? data['buyOrderNo'] ?? '') : '').toString();
         if (existingOrder.isNotEmpty) {
           _log('Unfinished order: $existingOrder — proceeding', level: LogLevel.warning);
           _state?.setCurrentOrder(existingOrder);
@@ -591,6 +632,7 @@ class ArbPayService {
       'Accept': 'application/json, text/plain, */*',
       'Content-Type': 'application/json',
       'authorization': 'Bearer $_token',
+      if (_memberId.isNotEmpty) 'memberId': _memberId,
       'deviceCode': _deviceCode,
       'deviceId': '',
       'deviceType': '3',
@@ -692,7 +734,6 @@ class ArbPayService {
           } catch (_) {}
           return true;
         ''');
-        await Future.delayed(const Duration(seconds: 3));
         byName = {};
         for (final host in probeHosts) {
           try {
@@ -735,18 +776,23 @@ class ArbPayService {
       final result = await _webView!.callAsyncJavaScript(
         functionBody: '''
           try {
+            var headers = {
+              'Accept': 'application/json, text/plain, */*',
+              'Content-Type': 'application/json',
+              'authorization': 'Bearer ' + token,
+              'deviceCode': deviceCode || '',
+              'deviceId': '',
+              'deviceType': '3',
+              'language': '1',
+              'page': page
+            };
+            if (memberId && memberId.length > 0) {
+              headers['memberId'] = memberId;
+            }
             var resp = await fetch(apiUrl, {
               method: 'POST',
-              headers: {
-                'Accept': 'application/json, text/plain, */*',
-                'Content-Type': 'application/json',
-                'authorization': 'Bearer ' + token,
-                'deviceCode': deviceCode || '',
-                'deviceId': '',
-                'deviceType': '3',
-                'language': '1',
-                'page': page
-              },
+              headers: headers,
+              credentials: 'include',
               body: bodyStr
             });
             var text = await resp.text();
@@ -758,6 +804,7 @@ class ArbPayService {
         arguments: {
           'apiUrl':     '$_apiUrl$path',
           'token':      _token,
+          'memberId':   _memberId,
           'deviceCode': _deviceCode,
           'page':       page,
           'bodyStr':    jsonEncode(body),
@@ -883,6 +930,25 @@ class ArbPayService {
     return filtered;
   }
 
+  Future<Map<String, dynamic>> _apiBeforeBuy(
+      String platformOrder, int amount, String bankCode,
+      {String payType = '3', int orderType = 1, bool verbose = false}) async {
+    final body = <String, dynamic>{
+      'amount': amount,
+      'platformOrder': platformOrder,
+      'payType': payType,
+      'orderType': orderType,
+    };
+    if (payType == '3' && bankCode.isNotEmpty) {
+      body['buyBankCode'] = bankCode;
+    }
+    return _request(
+      '/ar-wallet/buyCenter/beforeBuy',
+      body,
+      verbose: verbose,
+    );
+  }
+
   Future<Map<String, dynamic>> _apiBuy(
       String platformOrder, int amount, String bankCode,
       {String payType = '3', int orderType = 1, bool verbose = false}) async {
@@ -896,44 +962,64 @@ class ArbPayService {
       body['buyBankCode'] = bankCode;
       body['buyerKycId'] = 0;
     }
-    final resp = await _request(
+    return _request(
       '/ar-wallet/buyCenter/buy',
       body,
       verbose: verbose,
     );
-    return resp;
   }
 
-  // Fire several buy requests at once (native path) so the earliest one to
-  // reach the server claims the order. First success wins; otherwise return
-  // the first meaningful (non-empty) response. Falls back to a single request
-  // when the native path is disabled (the WebView controller can't safely run
-  // concurrent fetches).
   static const _successCodes = {'200', '0', '1', '00', 'success', 'SUCCESS'};
 
-  Future<Map<String, dynamic>> _apiBuyRace(
+  Future<Map<String, dynamic>> _claimOrder(
       String platformOrder, int amount, String bankCode,
       {required String payType, required int orderType, bool verbose = false}) async {
-    final n = (_nativeEnabled && _httpClient != null) ? _buyConcurrency : 1;
-    if (n == 1) {
-      return _apiBuy(platformOrder, amount, bankCode,
-          payType: payType, orderType: orderType, verbose: verbose);
+    // Step 1: Call beforeBuy to reserve the slot and claim directly
+    final beforeResp = await _apiBeforeBuy(
+      platformOrder,
+      amount,
+      bankCode,
+      payType: payType,
+      orderType: orderType,
+      verbose: verbose,
+    );
+
+    final beforeCode = beforeResp['code']?.toString() ?? '';
+
+    // If beforeBuy succeeded and assigned buyOrderNo directly:
+    if (_successCodes.contains(beforeCode)) {
+      final mrOrder = _extractMrOrder(beforeResp);
+      if (mrOrder.isNotEmpty) {
+        return beforeResp;
+      }
+      // If beforeBuy succeeded (1) but needs final confirmation via buy:
+      final buyResp = await _apiBuy(
+        platformOrder,
+        amount,
+        bankCode,
+        payType: payType,
+        orderType: orderType,
+        verbose: verbose,
+      );
+      if (buyResp.isNotEmpty) return buyResp;
+      return beforeResp;
     }
 
-    final futures = <Future<Map<String, dynamic>>>[
-      for (int i = 0; i < n; i++)
-        _apiBuy(platformOrder, amount, bankCode,
-            payType: payType, orderType: orderType, verbose: verbose && i == 0),
-    ];
-    final results = await Future.wait(futures);
+    // If bank was rejected (2005), unfinished order (1027), or snatched (1194),
+    // return immediately so the caller can handle bank-cycling or redirection.
+    if (beforeResp.isNotEmpty && beforeCode != '404' && beforeCode != '500') {
+      return beforeResp;
+    }
 
-    for (final r in results) {
-      if (_successCodes.contains(r['code']?.toString() ?? '')) return r;
-    }
-    for (final r in results) {
-      if (r.isNotEmpty) return r;
-    }
-    return {};
+    // Fallback: direct buy call
+    return _apiBuy(
+      platformOrder,
+      amount,
+      bankCode,
+      payType: payType,
+      orderType: orderType,
+      verbose: verbose,
+    );
   }
 
   String _extractMrOrder(Map<String, dynamic> resp) {
