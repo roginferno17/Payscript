@@ -16,7 +16,7 @@ Future<void> _clearWebViewSession() async {
   try { await WebStorageManager.instance().deleteAllData(); } catch (_) {}
 }
 
-const kBuildVersion = 'v2.1.2';
+const kBuildVersion = 'v2.2.0';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});

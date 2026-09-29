@@ -30,8 +30,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 URL     = "https://arbpay.me"
 API_URLS = [
-    "https://apiweb.apiarbpay.com",
     "https://apiweb.payapiar.com",
+    "https://apiweb.apiarbpay.com",
     "https://apiweb.asjoby.com",
     "https://apiweb.arbpay.me"
 ]
@@ -267,6 +267,15 @@ def api_get_order_list(amount_min: int = 100, amount_max: int = 1000):
         if not records and _buylist_call_count == 1:
             log(f"[DEBUG] Could not parse records — top-level keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
 
+        # Sort newest orders first so freshest listings are claimed immediately
+        def _get_ts(item):
+            val = item.get("timeStamp") or item.get("timestamp") or 0
+            try:
+                return float(val)
+            except Exception:
+                return 0
+        records.sort(key=_get_ts, reverse=True)
+
         filtered = [
             o for o in records
             if amount_min <= float(o.get("amount", 0)) <= amount_max
@@ -293,12 +302,12 @@ def api_before_buy(platform_order: str, amount: int, buy_bank_code: str = "",
 
 # Bank codes to cycle through when server rejects the current one (code 2005)
 BANK_CODES = [
-    "paytm", "phonepe", "gpay", "supermoney", "mobikwik", "freeCharge", "airtel",
+    "supermoney", "phonepe", "paytm", "gpay", "mobikwik", "freeCharge", "airtel",
     "jio", "freo", "slice", "twid", "pop", "navi", "moneyView", "induspay"
 ]
 
 def api_buy(platform_order: str, amount: int,
-            buy_bank_code: str = "paytm", buyer_kyc_id: int = 0,
+            buy_bank_code: str = "supermoney", buyer_kyc_id: int = 0,
             pay_type: str = "3", order_type: int = 1) -> dict:
     payload = {
         "amount": amount,
@@ -334,14 +343,14 @@ def extract_mr_order(buy_response: dict) -> str:
 
 def api_fast_buy_loop(amount_min: int = 100, amount_max: int = 1000, driver=None):
     """
-    Tight loop: buyList → beforeBuy → buy → return MR order on success.
+    Tight loop: buyList → direct buy (fast-path) → fallback beforeBuy → return MR order.
     All calls run inside Chrome via fetch() — Cloudflare transparent.
     """
-    log("API fast-buy loop started (browser-fetch mode)")
+    log("API fast-buy loop started (ultra-fast direct buy mode)")
     attempts = 0
     empty_streak = 0
     bank_index = 0               # cycles through BANK_CODES on 2005
-    skipped_orders = set()       # orders that returned 2005 for ALL banks
+    skipped_orders = set()       # orders that are snatched or rejected
     fetch_fail_streak = 0        # consecutive empty fetch() responses
 
     while True:
@@ -356,7 +365,7 @@ def api_fast_buy_loop(amount_min: int = 100, amount_max: int = 1000, driver=None
                 if driver:
                     build_api_session(driver)
                 empty_streak = 0
-            time.sleep(0.05)
+            time.sleep(0.015)
             continue
 
         empty_streak = 0
@@ -372,7 +381,7 @@ def api_fast_buy_loop(amount_min: int = 100, amount_max: int = 1000, driver=None
         if not order:
             # All visible orders have been skipped — clear and retry
             skipped_orders.clear()
-            time.sleep(0.1)
+            time.sleep(0.02)
             continue
 
         platform_order = (order.get("platformOrder") or order.get("orderNo")
@@ -380,28 +389,29 @@ def api_fast_buy_loop(amount_min: int = 100, amount_max: int = 1000, driver=None
         amount = int(order.get("amount", 0))
 
         if not platform_order:
-            time.sleep(0.05)
+            time.sleep(0.01)
             continue
 
         attempts += 1
         current_bank = BANK_CODES[bank_index % len(BANK_CODES)]
         log(f"API attempt {attempts}: order={platform_order} amount={amount} [bank={current_bank}]")
 
-        # Two-step claim: call beforeBuy first to reserve/claim order slot
-        buy_resp = api_before_buy(platform_order, amount, buy_bank_code=current_bank)
+        # FASTEST PATH: Directly hit /ar-wallet/buyCenter/buy first!
+        # Skipping beforeBuy roundtrip saves 200-500ms critical latency to win races against other bots.
+        buy_resp = api_buy(platform_order, amount, buy_bank_code=current_bank)
         buy_code = str(buy_resp.get("code", ""))
 
-        if buy_code in ("200", "0", "1", "00", "success", "SUCCESS"):
-            mr_order = extract_mr_order(buy_resp)
-            if mr_order:
-                log(f"Buy SUCCESS via beforeBuy after {attempts} attempts — MR order: {mr_order}")
-                return mr_order, amount
-            # If slot reserved, finalize with /buy
-            buy_resp = api_buy(platform_order, amount, buy_bank_code=current_bank)
+        if not buy_resp or buy_code in ("404", "500"):
+            # Fallback to beforeBuy if direct buy is not accepted
+            buy_resp = api_before_buy(platform_order, amount, buy_bank_code=current_bank)
             buy_code = str(buy_resp.get("code", ""))
-        elif not buy_resp or buy_code in ("404", "500"):
-            buy_resp = api_buy(platform_order, amount, buy_bank_code=current_bank)
-            buy_code = str(buy_resp.get("code", ""))
+            if buy_code in ("200", "0", "1", "00", "success", "SUCCESS"):
+                mr_order = extract_mr_order(buy_resp)
+                if mr_order:
+                    log(f"Buy SUCCESS via beforeBuy after {attempts} attempts — MR order: {mr_order}")
+                    return mr_order, amount
+                buy_resp = api_buy(platform_order, amount, buy_bank_code=current_bank)
+                buy_code = str(buy_resp.get("code", ""))
 
         # Detect fetch() failures (empty dict = network/session error)
         if not buy_resp:
@@ -411,7 +421,7 @@ def api_fast_buy_loop(amount_min: int = 100, amount_max: int = 1000, driver=None
                 if driver:
                     build_api_session(driver)
                 fetch_fail_streak = 0
-            time.sleep(0.1)
+            time.sleep(0.05)
             continue
         fetch_fail_streak = 0
 
@@ -438,7 +448,7 @@ def api_fast_buy_loop(amount_min: int = 100, amount_max: int = 1000, driver=None
                 log(f"[DEBUG] All banks rejected for {platform_order} — skipping order")
                 skipped_orders.add(platform_order)
                 bank_index = 0
-            time.sleep(0.05)
+            time.sleep(0.01)
             continue
         elif buy_code == "1027":
             # Unfinished order exists — recover it and proceed to payment
@@ -449,11 +459,18 @@ def api_fast_buy_loop(amount_min: int = 100, amount_max: int = 1000, driver=None
                 return existing_order, amount
         elif buy_code == "1191":
             # Rate limited — server asks to wait 5 seconds
+            log("[WARN] Rate limited (code 1191) — waiting 5 seconds...")
             time.sleep(5.0)
             continue
-        # code 1194 = snatched by someone else — just keep looping
+        elif buy_code == "1194":
+            # Snatched by another bot/user — blacklist immediately so we never waste time retrying it
+            skipped_orders.add(platform_order)
+            log(f"[SNATCHED] Order {platform_order} was grabbed by someone else (code 1194) — skipped")
+        else:
+            # Other error / order expired
+            skipped_orders.add(platform_order)
 
-        time.sleep(0.02)
+        time.sleep(0.01)
 
 
 # ── Stale-safe DOM helpers ────────────────────────────────────────────────────

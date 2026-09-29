@@ -8,14 +8,14 @@ import 'alert_service.dart';
 
 class ArbPayService {
   static const List<String> _apiUrls = [
-    'https://apiweb.apiarbpay.com',
     'https://apiweb.payapiar.com',
+    'https://apiweb.apiarbpay.com',
     'https://apiweb.asjoby.com',
     'https://apiweb.arbpay.me',
   ];
-  String _apiUrl = 'https://apiweb.apiarbpay.com';
+  String _apiUrl = 'https://apiweb.payapiar.com';
   static const List<String> _bankCodes = [
-    'paytm', 'phonepe', 'gpay', 'supermoney', 'mobikwik', 'freeCharge', 'airtel',
+    'supermoney', 'phonepe', 'paytm', 'gpay', 'mobikwik', 'freeCharge', 'airtel',
     'jio', 'freo', 'slice', 'twid', 'pop', 'navi', 'moneyView', 'induspay'
   ];
 
@@ -400,11 +400,11 @@ class ArbPayService {
 
       if (orders.isEmpty) {
         emptyStreak++;
-        if (emptyStreak % 20 == 0) {
+        if (emptyStreak % 100 == 0) {
           _log('Searching for orders in ₹$amtMin-₹$amtMax ($emptyStreak checks)...',
               level: LogLevel.info);
         }
-        await Future.delayed(const Duration(milliseconds: 150));
+        await Future.delayed(const Duration(milliseconds: 15));
         continue;
       }
       emptyStreak = 0;
@@ -421,7 +421,7 @@ class ArbPayService {
       }
       if (order == null) {
         _skippedOrders.clear();
-        await Future.delayed(const Duration(milliseconds: 100));
+        await Future.delayed(const Duration(milliseconds: 15));
         continue;
       }
 
@@ -429,7 +429,7 @@ class ArbPayService {
       final rawAmt = order['amount'] ?? order['maximumAmount'] ?? order['minimumAmount'] ?? '0';
       final amount = (double.tryParse(rawAmt.toString()) ?? 0).toInt();
       if (platformOrder.isEmpty) {
-        await Future.delayed(const Duration(milliseconds: 50));
+        await Future.delayed(const Duration(milliseconds: 10));
         continue;
       }
 
@@ -514,7 +514,7 @@ class ArbPayService {
         }
       } else if (code == '2005') {
         if (!isOrderBank) {
-          _log('Bank "$currentBank" rejected (2005) for $platformOrder — next bank');
+          _log('Bank "$currentBank" rejected (2005) for $platformOrder — next bank', level: LogLevel.warning);
           _bankIndex++;
           if (_bankIndex % _activeBanks.length == 0) {
             _log('All banks rejected for $platformOrder — skipping', level: LogLevel.warning);
@@ -530,7 +530,7 @@ class ArbPayService {
           _log('Bank mode order rejected (2005) for $platformOrder — skipping', level: LogLevel.warning);
           _skippedOrders.add(platformOrder);
         }
-        await Future.delayed(const Duration(milliseconds: 50));
+        await Future.delayed(const Duration(milliseconds: 10));
         continue;
       } else if (code == '1027') {
         final data = buyResp['data'];
@@ -546,16 +546,18 @@ class ArbPayService {
           return;
         }
       } else if (code == '1191') {
-        _log('Rate limited (1191) "$msg" — waiting 5s', level: LogLevel.warning);
-        await Future.delayed(const Duration(seconds: 5));
+        _log('Rate limited (1191) "$msg" — waiting 3s', level: LogLevel.warning);
+        await Future.delayed(const Duration(seconds: 3));
         continue;
       } else if (code == '1194') {
-        // Snatched by someone else — just loop silently
+        _skippedOrders.add(platformOrder);
+        _log('Order $platformOrder snatched by competitor (1194)', level: LogLevel.warning);
       } else {
-        _log('Unknown code=$code msg="$msg"', level: LogLevel.warning);
+        _skippedOrders.add(platformOrder);
+        _log('Order $platformOrder failed (code=$code): "$msg"', level: LogLevel.warning);
       }
 
-      await Future.delayed(const Duration(milliseconds: 20));
+      await Future.delayed(const Duration(milliseconds: 10));
     }
   }
 
@@ -750,14 +752,25 @@ class ArbPayService {
     } catch (_) {}
   }
 
-  // ── Unified request: native fast-path first (if clearance present), WebView fallback ──
+  Map<String, dynamic> _cleanBody(Map<String, dynamic> body) {
+    final clean = <String, dynamic>{};
+    for (final entry in body.entries) {
+      if (entry.value != null && entry.value.toString().isNotEmpty) {
+        clean[entry.key] = entry.value;
+      }
+    }
+    return clean;
+  }
+
+  // ── Unified request: native fast-path first, WebView fallback ─────────────
   Future<Map<String, dynamic>> _request(String path, Map<String, dynamic> body,
       {String page = 'Arb', bool verbose = false}) async {
-    if (_nativeEnabled && _cookieHeader.contains('cf_clearance')) {
-      final native = await _postNative(path, body, page: page, verbose: verbose);
+    final clean = _cleanBody(body);
+    if (_nativeEnabled && _token.isNotEmpty) {
+      final native = await _postNative(path, clean, page: page, verbose: verbose);
       if (native != null) return native;
     }
-    return _post(path, body, page: page, verbose: verbose);
+    return _post(path, clean, page: page, verbose: verbose);
   }
 
   // ── WebView fetch() — full verbose logging ───────────────────────────────
@@ -922,6 +935,16 @@ class ArbPayService {
         })
         .toList();
 
+    // Sort newest orders first so the bot claims fresh listings before competitors
+    filtered.sort((a, b) {
+      final tA = num.tryParse((a['timeStamp'] ?? a['timestamp'] ?? 0).toString()) ?? 0;
+      final tB = num.tryParse((b['timeStamp'] ?? b['timestamp'] ?? 0).toString()) ?? 0;
+      if (tA != tB) return tB.compareTo(tA);
+      final ordA = (a['platformOrder'] ?? a['orderNo'] ?? '').toString();
+      final ordB = (b['platformOrder'] ?? b['orderNo'] ?? '').toString();
+      return ordB.compareTo(ordA);
+    });
+
     if (verbose && records.isNotEmpty) {
       _log('buyList: ${filtered.length} orders in ₹$amtMin-₹$amtMax range',
           level: filtered.isEmpty ? LogLevel.warning : LogLevel.success);
@@ -974,7 +997,23 @@ class ArbPayService {
   Future<Map<String, dynamic>> _claimOrder(
       String platformOrder, int amount, String bankCode,
       {required String payType, required int orderType, bool verbose = false}) async {
-    // Step 1: Call beforeBuy to reserve the slot and claim directly
+    // 1-step direct buy attempt first for sub-50ms high-speed claiming
+    final buyResp = await _apiBuy(
+      platformOrder,
+      amount,
+      bankCode,
+      payType: payType,
+      orderType: orderType,
+      verbose: verbose,
+    );
+
+    final buyCode = buyResp['code']?.toString() ?? '';
+    // If successful, or if order status is definitive (bank reject, snatched, unfinished), return immediately
+    if (_successCodes.contains(buyCode) || buyCode == '2005' || buyCode == '1194' || buyCode == '1027') {
+      return buyResp;
+    }
+
+    // Step 2 fallback: beforeBuy reservation in case backend requires slot reservation
     final beforeResp = await _apiBeforeBuy(
       platformOrder,
       amount,
@@ -985,15 +1024,12 @@ class ArbPayService {
     );
 
     final beforeCode = beforeResp['code']?.toString() ?? '';
-
-    // If beforeBuy succeeded and assigned buyOrderNo directly:
     if (_successCodes.contains(beforeCode)) {
       final mrOrder = _extractMrOrder(beforeResp);
       if (mrOrder.isNotEmpty) {
         return beforeResp;
       }
-      // If beforeBuy succeeded (1) but needs final confirmation via buy:
-      final buyResp = await _apiBuy(
+      return await _apiBuy(
         platformOrder,
         amount,
         bankCode,
@@ -1001,25 +1037,9 @@ class ArbPayService {
         orderType: orderType,
         verbose: verbose,
       );
-      if (buyResp.isNotEmpty) return buyResp;
-      return beforeResp;
     }
 
-    // If bank was rejected (2005), unfinished order (1027), or snatched (1194),
-    // return immediately so the caller can handle bank-cycling or redirection.
-    if (beforeResp.isNotEmpty && beforeCode != '404' && beforeCode != '500') {
-      return beforeResp;
-    }
-
-    // Fallback: direct buy call
-    return _apiBuy(
-      platformOrder,
-      amount,
-      bankCode,
-      payType: payType,
-      orderType: orderType,
-      verbose: verbose,
-    );
+    return beforeResp.isNotEmpty ? beforeResp : buyResp;
   }
 
   String _extractMrOrder(Map<String, dynamic> resp) {
