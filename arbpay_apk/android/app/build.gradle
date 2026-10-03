@@ -46,9 +46,20 @@ android {
 
     buildTypes {
         release {
+            // Debug keystore (same cert as all previous releases) but with
+            // explicit v1+v2+v3 schemes: v1 JAR signing keeps third-party
+            // file-manager/sideload parsers happy, v2/v3 cover Android 7+.
             signingConfig signingConfigs.debug
             minifyEnabled false
             shrinkResources false
+        }
+    }
+
+    signingConfigs {
+        debug {
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
         }
     }
 }
