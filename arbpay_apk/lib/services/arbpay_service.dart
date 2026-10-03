@@ -31,6 +31,8 @@ class ArbPayService {
   // Banks actually enabled/bound on the site for this account. Populated by
   // _fetchAvailableBanks(); falls back to the full hardcoded list.
   List<String> _activeBanks = List<String>.from(_bankCodes);
+  // v3.0 smartRangeBuy needs (bankCode, kycId) pairs — boundBanks carry real ids.
+  final List<Map<String, dynamic>> _activeBankEntries = [];
   // Consecutive orders that were rejected (2005) by EVERY active bank.
   int _ordersAllBanksRejected = 0;
 
@@ -58,6 +60,7 @@ class ArbPayService {
     _seenBuyCodes.clear();
     _bankIndex = 0;
     _ordersAllBanksRejected = 0;
+    _activeBankEntries.clear();
     _token = '';
     _deviceCode = '';
     _memberId = '';
@@ -104,7 +107,7 @@ class ArbPayService {
       _seenBuyCodes.clear();
       await _harvestSession();
       await _fetchAvailableBanks();
-      await _runBuyLoop(amtMin, amtMax);
+      await _runSmartGrabLoop(amtMin, amtMax);
     } catch (e) {
       _log('Fatal error: $e', level: LogLevel.error);
       _state?.setStatus(BotStatus.error);
@@ -301,6 +304,9 @@ class ArbPayService {
       _log('Bank list fetch failed — using default bank cycle (${_bankCodes.join(", ")})',
           level: LogLevel.warning);
       _activeBanks = List<String>.from(_bankCodes);
+      _activeBankEntries
+        ..clear()
+        ..addAll(_bankCodes.map((c) => {'code': c, 'kycId': 0, 'name': c}));
       return;
     }
 
@@ -310,6 +316,9 @@ class ArbPayService {
       _log('Bank list API error (code=$respCode): $respMsg — using default bank cycle',
           level: LogLevel.warning);
       _activeBanks = List<String>.from(_bankCodes);
+      _activeBankEntries
+        ..clear()
+        ..addAll(_bankCodes.map((c) => {'code': c, 'kycId': 0, 'name': c}));
       return;
     }
 
@@ -360,9 +369,257 @@ class ArbPayService {
       _log('Bank list parsed but NO usable bankCodes found. Using default: ${_bankCodes.join(", ")}',
           level: LogLevel.warning);
       _activeBanks = List<String>.from(_bankCodes);
+      _activeBankEntries
+        ..clear()
+        ..addAll(_bankCodes.map((c) => {'code': c, 'kycId': 0, 'name': c}));
     } else {
       _activeBanks = ordered;
+      // v3.0: also keep (code, kycId) pairs — boundBanks carry real ids for smartRangeBuy.
+      _activeBankEntries.clear();
+      try {
+        final data = resp['data'];
+        if (data is Map) {
+          final seenEntry = <String>{};
+          for (final key in ['boundBanks', 'allBanks']) {
+            final lst = data[key];
+            if (lst is List) {
+              for (final b in lst) {
+                if (b is Map) {
+                  final code = (b['bankCode'] ?? b['payBankCode'] ?? b['channelCode'] ?? '')
+                      .toString().trim();
+                  if (code.isEmpty || !seenEntry.add(code.toLowerCase())) continue;
+                  int kid = 0;
+                  try {
+                    kid = int.parse((b['id'] ?? 0).toString());
+                  } catch (_) {}
+                  _activeBankEntries.add({
+                    'code': code,
+                    'kycId': kid,
+                    'name': (b['bankName'] ?? b['upiId'] ?? code).toString(),
+                  });
+                }
+              }
+            }
+          }
+          // ensure every ordered code has an entry (fallback kycId 0)
+          for (final c in ordered) {
+            if (!_activeBankEntries.any((e) => (e['code'] as String).toLowerCase() == c.toLowerCase())) {
+              _activeBankEntries.add({'code': c, 'kycId': 0, 'name': c});
+            }
+          }
+          // order entries: bound first, then known order
+          _activeBankEntries.sort((a, b) {
+            final ia = _bankCodes.indexOf((a['code'] as String).toLowerCase());
+            final ib = _bankCodes.indexOf((b['code'] as String).toLowerCase());
+            return (ia < 0 ? 999 : ia).compareTo(ib < 0 ? 999 : ib);
+          });
+        }
+      } catch (_) {}
+      if (_activeBankEntries.isEmpty) {
+        _activeBankEntries.addAll(ordered.map((c) => {'code': c, 'kycId': 0, 'name': c}));
+      }
       _log('Enabled banks: ${ordered.join(", ")}', level: LogLevel.success);
+    }
+  }
+
+  // ── v3.0 SmartRangeBuy (One-click Grab) — endless match/start ──────────────
+  // Site: useBuyARB.hook ba(): for (requestsNum<20) POST match/start @1s,
+  // FAILED after 20 requires manual Retry. We automate: outer infinite rounds.
+  Future<Map<String, dynamic>> _smartRanges(int orderType) =>
+      _request('/ar-wallet/smartRangeBuy/amountRanges',
+          {'orderType': orderType, 'pageNo': 1, 'pageSize': 100},
+          verbose: true);
+
+  Future<Map<String, dynamic>> _smartStatus(int orderType) =>
+      _request('/ar-wallet/smartRangeBuy/status', {'orderType': orderType});
+
+  Future<Map<String, dynamic>> _smartStart(
+          int minAmount, int maxAmount, int orderType, String bankCode, int kycId) =>
+      _request('/ar-wallet/smartRangeBuy/match/start', {
+        'maxAmount': maxAmount,
+        'minAmount': minAmount,
+        'orderType': orderType,
+        if (bankCode.isNotEmpty) 'buyBankCode': bankCode,
+        'buyerKycId': kycId,
+      });
+
+  Future<Map<String, dynamic>> _smartCancel(int orderType) =>
+      _request('/ar-wallet/smartRangeBuy/match/cancel', {'orderType': orderType});
+
+  Future<void> _runSmartGrabLoop(int amtMin, int amtMax) async {
+    final isBank = _state?.paymentMode == PaymentMode.bank;
+    final orderType = isBank ? 2 : 1;
+    final modeLabel = isBank ? 'Bank' : 'OTP/UPI';
+    _log('SmartGrab endless started ($amtMin-$amtMax) [Mode: $modeLabel, orderType=$orderType] — One-click Grab API',
+        level: LogLevel.success);
+
+    try {
+      final r = await _smartRanges(orderType);
+      if ((r['code']?.toString() ?? '') == '1') {
+        final data = r['data'];
+        if (data is Map) {
+          final list = data['list'];
+          if (list is List && list.isNotEmpty) {
+            final preview = list.take(6).map((e) {
+              if (e is Map) return '${e['minimumAmount']}-${e['maximumAmount']}';
+              return '?';
+            }).join(', ');
+            _log('Site ranges (${list.length}): [$preview...]', level: LogLevel.info);
+          }
+          final ext = data['extend'];
+          if (ext is Map) {
+            _log('Site reward: min=${ext['minRewardAmount']} max=${ext['maxRewardAmount']}',
+                level: LogLevel.info);
+          }
+        }
+      }
+    } catch (_) {}
+
+    if (_activeBankEntries.isEmpty) {
+      _activeBankEntries.addAll(_activeBanks.map((c) => {'code': c, 'kycId': 0, 'name': c}));
+    }
+    _log('Grab banks: ${_activeBankEntries.map((e) => '${e['code']}(id=${e['kycId']})').join(", ")}',
+        level: LogLevel.info);
+
+    // Resume already-matched order if status holds one.
+    try {
+      final st = await _smartStatus(orderType);
+      if ((st['code']?.toString() ?? '') == '1') {
+        final d = st['data'];
+        if (d is Map) {
+          final br = d['buyResult'];
+          if (br is Map && (br['buyOrderNo']?.toString() ?? '').isNotEmpty) {
+            final orderNo = br['buyOrderNo'].toString();
+            _log('Resumed MATCHED order from status: $orderNo', level: LogLevel.success);
+            _state?.incrementSuccess();
+            _state?.setCurrentOrder(orderNo);
+            _state?.incrementRounds();
+            _state?.setStatus(BotStatus.qrReady);
+            if (_state != null) AlertService.playQrReadyAlert(_state!);
+            await _reloadWebView(orderNo);
+            return;
+          }
+        }
+      }
+    } catch (_) {}
+
+    int totalRequests = 0;
+    int roundNo = 0;
+    int bankIdx = 0;
+
+    while (_running) {
+      if (_token.isEmpty) {
+        _log('No token — waiting 3s', level: LogLevel.warning);
+        await Future.delayed(const Duration(seconds: 3));
+        continue;
+      }
+      roundNo++;
+      final entry = _activeBankEntries[bankIdx % _activeBankEntries.length];
+      final bankCode = (entry['code'] ?? '').toString();
+      int kycId = 0;
+      try {
+        kycId = int.parse(entry['kycId'].toString());
+      } catch (_) {}
+      _log('-- Round $roundNo: match/start x20 in $amtMin-$amtMax [bank=$bankCode kycId=$kycId] --',
+          level: LogLevel.info);
+
+      for (int n = 1; n <= 20; n++) {
+        if (!_running) return;
+        totalRequests++;
+        _state?.incrementAttempts();
+        Map<String, dynamic> resp;
+        try {
+          resp = await _smartStart(amtMin, amtMax, orderType, bankCode, kycId);
+        } catch (e) {
+          _log('match/start error: $e', level: LogLevel.warning);
+          await Future.delayed(const Duration(seconds: 1));
+          continue;
+        }
+        if (resp.isEmpty) {
+          _log('[$totalRequests] (req $n/20) empty response — retrying...', level: LogLevel.warning);
+          await Future.delayed(const Duration(seconds: 1));
+          continue;
+        }
+        final code = resp['code']?.toString() ?? '';
+        final msg = resp['msg']?.toString() ?? resp['message']?.toString() ?? '';
+        if (!_seenBuyCodes.contains('smart:$code')) {
+          _seenBuyCodes.add('smart:$code');
+          _log('NEW smart code=$code msg="$msg"', level: LogLevel.warning);
+        }
+        if (code == '1027') {
+          String orderNo = '';
+          try {
+            final data = resp['data'];
+            if (data is Map) {
+              final pend = data['pendingOrder'] ?? data;
+              if (pend is Map) {
+                orderNo = (pend['buyOrderNo'] ?? pend['platformOrder'] ?? '').toString();
+              }
+            }
+          } catch (_) {}
+          if (orderNo.isNotEmpty) {
+            _log('MATCHED via unfinished order (1027): $orderNo', level: LogLevel.success);
+            _state?.incrementSuccess();
+            _state?.setCurrentOrder(orderNo);
+            _state?.incrementRounds();
+            _state?.setStatus(BotStatus.qrReady);
+            if (_state != null) AlertService.playQrReadyAlert(_state!);
+            await _reloadWebView(orderNo);
+            return;
+          }
+          await Future.delayed(const Duration(seconds: 1));
+          continue;
+        }
+        if (code == '1205') {
+          _log('smartGrab unavailable (1205): "$msg" — waiting 5s', level: LogLevel.warning);
+          await Future.delayed(const Duration(seconds: 5));
+          break;
+        }
+        if (code != '1') {
+          _log('[$totalRequests] code=$code msg="$msg" — new round in 2s', level: LogLevel.warning);
+          await Future.delayed(const Duration(seconds: 2));
+          break;
+        }
+        final data = resp['data'];
+        String matchResult = '';
+        Map buyResult = {};
+        Map matchInfo = {};
+        if (data is Map) {
+          matchResult = (data['matchResult'] ?? '').toString().toUpperCase();
+          if (data['buyResult'] is Map) buyResult = data['buyResult'];
+          if (data['matchInfo'] is Map) matchInfo = data['matchInfo'];
+        }
+        if (matchResult == 'MATCHED') {
+          final buyNo = (buyResult['buyOrderNo'] ?? '').toString();
+          final amt = (double.tryParse(buyResult['amount']?.toString() ?? '') ?? amtMin.toDouble()).toInt();
+          final reward = buyResult['rewardAmount']?.toString() ?? '0';
+          final payTime = matchInfo['payTime']?.toString() ?? '';
+          _log('MATCHED after $totalRequests reqs (round $roundNo $n/20): $buyNo Rs$amt reward=$reward payTime=${payTime}s',
+              level: LogLevel.success);
+          if (buyNo.isEmpty) {
+            await Future.delayed(const Duration(seconds: 1));
+            continue;
+          }
+          _state?.incrementSuccess();
+          _state?.setCurrentOrder(buyNo);
+          _state?.incrementRounds();
+          _state?.setStatus(BotStatus.qrReady);
+          if (_state != null) AlertService.playQrReadyAlert(_state!);
+          await _reloadWebView(buyNo);
+          return;
+        }
+        if (n == 1 || n % 5 == 0) {
+          _log('[$totalRequests] searching $amtMin-$amtMax ($n/20) ${matchResult.isEmpty ? "MATCHING" : matchResult}...',
+              level: LogLevel.info);
+        }
+        if (n < 20) {
+          await Future.delayed(const Duration(seconds: 1));
+        } else {
+          _log('Round $roundNo 20/20 no match — auto-retrying (endless)...', level: LogLevel.warning);
+        }
+      }
+      bankIdx++;
+      await Future.delayed(const Duration(milliseconds: 200));
     }
   }
 
